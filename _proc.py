@@ -1,4 +1,3 @@
-"""Shared subprocess helper — live streaming + timeout."""
 import os
 import subprocess
 import threading
@@ -15,7 +14,6 @@ def java_env() -> dict:
 
 
 def run_stream(cmd, timeout: int = 1800, label: str = "cmd", env: dict = None):
-    """Run cmd, stream stdout+stderr live to console, raise on non-zero exit."""
     if env is None:
         env = java_env()
     print(f"[>] {label}: {' '.join(cmd)}", flush=True)
@@ -25,6 +23,7 @@ def run_stream(cmd, timeout: int = 1800, label: str = "cmd", env: dict = None):
             cmd,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
+            stdin=subprocess.DEVNULL,
             text=True,
             bufsize=1,
             env=env,
