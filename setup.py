@@ -1,4 +1,4 @@
-"""Auto-download: JRE, ecj, apktool, build-tools, android.jar, keystore (Google-like)."""
+"""Auto-download + 4096-bit Play-style keystore."""
 import os
 import shutil
 import stat
@@ -18,7 +18,7 @@ PLATFORM_JAR_URLS = [
     "https://github.com/Sable/android-platforms/raw/master/android-30/android.jar",
 ]
 
-_READY_FLAG = os.path.join(TOOLS_DIR, ".ready_v2")
+_READY_FLAG = os.path.join(TOOLS_DIR, ".ready_v3")
 _setup_lock = threading.Lock()
 _setup_done = threading.Event()
 _setup_error = {"exc": None}
@@ -112,11 +112,11 @@ def _extract_platform():
 
 
 def _ensure_keystore():
-    """Google-Android style cert. Not spoofing — field names mimic common AOSP signing."""
+    """4096-bit RSA + Google-like cert fields."""
     if os.path.exists(KEYSTORE_PATH):
         return
     os.makedirs(TOOLS_DIR, exist_ok=True)
-    print("[*] generating play-style keystore ...", flush=True)
+    print("[*] generating 4096-bit play keystore ...", flush=True)
     from cryptography import x509
     from cryptography.x509.oid import NameOID
     from cryptography.hazmat.primitives import hashes, serialization
@@ -124,7 +124,7 @@ def _ensure_keystore():
     from cryptography.hazmat.primitives.serialization import pkcs12
     import datetime
 
-    key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    key = rsa.generate_private_key(public_exponent=65537, key_size=4096)
     subject = issuer = x509.Name([
         x509.NameAttribute(NameOID.COUNTRY_NAME,             "US"),
         x509.NameAttribute(NameOID.STATE_OR_PROVINCE_NAME,   "California"),
@@ -140,7 +140,7 @@ def _ensure_keystore():
         .public_key(key.public_key())
         .serial_number(x509.random_serial_number())
         .not_valid_before(now - datetime.timedelta(days=1))
-        .not_valid_after(now + datetime.timedelta(days=10950))   # 30 years
+        .not_valid_after(now + datetime.timedelta(days=10950))
         .add_extension(x509.BasicConstraints(ca=False, path_length=None), critical=True)
         .add_extension(x509.KeyUsage(
             digital_signature=True, content_commitment=False,
@@ -148,7 +148,7 @@ def _ensure_keystore():
             key_agreement=False, key_cert_sign=False, crl_sign=False,
             encipher_only=False, decipher_only=False,
         ), critical=True)
-        .sign(key, hashes.SHA256())
+        .sign(key, hashes.SHA384())
     )
     p12 = pkcs12.serialize_key_and_certificates(
         name=KEY_ALIAS.encode(), key=key, cert=cert, cas=None,
@@ -156,7 +156,7 @@ def _ensure_keystore():
     )
     with open(KEYSTORE_PATH, "wb") as f:
         f.write(p12)
-    print("[✓] play-style keystore ready", flush=True)
+    print("[✓] 4096-bit play keystore ready", flush=True)
 
 
 def _do_setup():
