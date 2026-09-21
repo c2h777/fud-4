@@ -1,24 +1,11 @@
-"""
-Sab kuch auto-download. Ek bhi manual step nahi.
-  - JRE 17
-  - ecj (eclipse compiler)
-  - apktool.jar
-  - Android build-tools r34 (d8, apksigner, zipalign)
-  - Android platform android.jar (multiple URL fallback)
-  - keystore
-  - loader.dex
-
-ensure_tools() thread-safe hai. Parallel calls serialize honge.
-"""
+"""Auto-download: JRE, ecj, apktool, build-tools, android.jar, keystore, loader.dex."""
 import os
 import shutil
 import stat
 import tarfile
 import threading
-import time
 import urllib.request
 import zipfile
-import subprocess
 from config import (
     TOOLS_DIR, KEYSTORE_PATH, KEYSTORE_PASS, KEY_ALIAS,
     JAVA_BIN, ECJ_JAR, APKTOOL_JAR, BT_DIR,
@@ -27,6 +14,7 @@ from config import (
     URL_JRE, URL_ECJ, URL_APKTOOL, URL_BUILDTOOLS,
     PAYLOAD_KEY1, PAYLOAD_KEY2, PAYLOAD_ROT,
 )
+from _proc import run_stream
 
 PLATFORM_ZIP_URLS = [
     "https://dl.google.com/android/repository/platform-34_r02.zip",
@@ -44,8 +32,6 @@ PLATFORM_JAR_URLS = [
 ]
 
 _READY_FLAG = os.path.join(TOOLS_DIR, ".ready")
-
-# ---- thread safety ----
 _setup_lock = threading.Lock()
 _setup_done = threading.Event()
 _setup_error = {"exc": None}
@@ -53,81 +39,103 @@ _setup_error = {"exc": None}
 
 def _download(url, dest):
     if os.path.exists(dest) and os.path.getsize(dest) > 0:
+        print(f"[i] {os.path.basename(dest)} already present", flush=True)
         return
     os.makedirs(os.path.dirname(dest), exist_ok=True)
-    print(f"[*] downloading {os.path.basename(dest)} ...")
+    print(f"[*] downloading {os.path.basename(dest)} <- {url}", flush=True)
     tmp = dest + ".part"
     urllib.request.urlretrieve(url, tmp)
     os.replace(tmp, dest)
+    print(f"[✓] {os.path.basename(dest)} {os.path.getsize(dest)} bytes", flush=True)
 
 
 def _extract_jre():
     if os.path.exists(JAVA_BIN):
+        print("[i] jre already present", flush=True)
         return
     tgz = os.path.join(TOOLS_DIR, "jre.tgz")
     _download(URL_JRE, tgz)
-    print("[*] extracting jre ...")
+    print("[*] extracting jre ...", flush=True)
     with tarfile.open(tgz) as t:
-        t.extractall(TOOLS_DIR)
-    for d in os.listdir(TOOLS_DIR):
+        try:
+            t.extractall(TOOLS_DIR, filter="fully_trusted")
+        except TypeError:
+            t.extractall(TOOLS_DIR)
+    # locate extracted jdk dir
+    picked = None
+    for d in sorted(os.listdir(TOOLS_DIR)):
         full = os.path.join(TOOLS_DIR, d)
-        if os.path.isdir(full) and ("jdk-" in d or "jre" in d.lower()):
-            if not os.path.exists(os.path.join(full, "bin", "java")):
-                continue
-            target = os.path.join(TOOLS_DIR, "jre")
-            if os.path.exists(target):
-                shutil.rmtree(target)
-            os.rename(full, target)
-            break
+        if not os.path.isdir(full):
+            continue
+        if d == "jre":
+            continue
+        if ("jdk-" in d) or (d.lower().startswith("jre")):
+            if os.path.exists(os.path.join(full, "bin", "java")):
+                picked = full
+                break
+    if not picked:
+        raise RuntimeError("jre extracted but no bin/java found")
+    target = os.path.join(TOOLS_DIR, "jre")
+    if os.path.exists(target):
+        shutil.rmtree(target)
+    os.rename(picked, target)
     if os.path.exists(tgz):
         os.remove(tgz)
+    print(f"[✓] jre ready → {JAVA_BIN}", flush=True)
 
 
 def _extract_build_tools():
     if os.path.exists(APKSIGNER_BIN):
+        print("[i] build-tools already present", flush=True)
         return
     zpath = os.path.join(TOOLS_DIR, "bt.zip")
     _download(URL_BUILDTOOLS, zpath)
-    print("[*] extracting build-tools ...")
+    print("[*] extracting build-tools ...", flush=True)
     with zipfile.ZipFile(zpath) as z:
         z.extractall(TOOLS_DIR)
-    for d in os.listdir(TOOLS_DIR):
+    picked = None
+    for d in sorted(os.listdir(TOOLS_DIR)):
         full = os.path.join(TOOLS_DIR, d)
-        if os.path.isdir(full) and d.startswith("android-") \
-                and os.path.exists(os.path.join(full, "apksigner")):
-            if os.path.exists(BT_DIR):
-                shutil.rmtree(BT_DIR)
-            os.rename(full, BT_DIR)
-            break
+        if os.path.isdir(full) and d.startswith("android-"):
+            if os.path.exists(os.path.join(full, "apksigner")):
+                picked = full
+                break
+    if not picked:
+        raise RuntimeError("build-tools extracted but apksigner not found")
+    if os.path.exists(BT_DIR):
+        shutil.rmtree(BT_DIR)
+    os.rename(picked, BT_DIR)
     if os.path.exists(zpath):
         os.remove(zpath)
     for b in (APKSIGNER_BIN, ZIPALIGN_BIN, D8_BIN):
         if os.path.exists(b):
             os.chmod(b, os.stat(b).st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
+    print(f"[✓] build-tools ready → {BT_DIR}", flush=True)
 
 
 def _extract_platform():
     if os.path.exists(ANDROID_JAR) and os.path.getsize(ANDROID_JAR) > 0:
+        print("[i] android.jar already present", flush=True)
         return
     os.makedirs(os.path.dirname(ANDROID_JAR), exist_ok=True)
 
     for jar_url in PLATFORM_JAR_URLS:
         try:
-            print(f"[*] trying direct jar: {jar_url}")
+            print(f"[*] trying direct jar: {jar_url}", flush=True)
             tmp = ANDROID_JAR + ".part"
             urllib.request.urlretrieve(jar_url, tmp)
             if os.path.getsize(tmp) > 1024 * 100:
                 os.replace(tmp, ANDROID_JAR)
-                print(f"[✓] android.jar fetched ({os.path.getsize(ANDROID_JAR)} bytes)")
+                print(f"[✓] android.jar {os.path.getsize(ANDROID_JAR)} bytes", flush=True)
                 return
             os.remove(tmp)
         except Exception as e:
-            print(f"[!] jar mirror failed: {e}")
+            print(f"[!] jar mirror failed: {e}", flush=True)
 
     zpath = os.path.join(TOOLS_DIR, "plat.zip")
     for zip_url in PLATFORM_ZIP_URLS:
         try:
-            print(f"[*] trying zip: {zip_url}")
+            print(f"[*] trying zip: {zip_url}", flush=True)
             if os.path.exists(zpath):
                 os.remove(zpath)
             urllib.request.urlretrieve(zip_url, zpath)
@@ -145,25 +153,24 @@ def _extract_platform():
                 shutil.copy2(jar_path, ANDROID_JAR)
                 shutil.rmtree(tmp_ex, ignore_errors=True)
                 os.remove(zpath)
-                print(f"[✓] android.jar extracted ({os.path.getsize(ANDROID_JAR)} bytes)")
+                print(f"[✓] android.jar {os.path.getsize(ANDROID_JAR)} bytes", flush=True)
                 return
             shutil.rmtree(tmp_ex, ignore_errors=True)
             os.remove(zpath)
         except Exception as e:
-            print(f"[!] zip attempt failed: {e}")
+            print(f"[!] zip failed: {e}", flush=True)
             if os.path.exists(zpath):
                 os.remove(zpath)
 
-    raise RuntimeError(
-        "android.jar could not be obtained. Place manually at " + ANDROID_JAR
-    )
+    raise RuntimeError("android.jar unavailable from all mirrors")
 
 
 def _ensure_keystore():
     if os.path.exists(KEYSTORE_PATH):
+        print("[i] keystore already present", flush=True)
         return
     os.makedirs(TOOLS_DIR, exist_ok=True)
-    print("[*] generating keystore ...")
+    print("[*] generating keystore ...", flush=True)
     from cryptography import x509
     from cryptography.x509.oid import NameOID
     from cryptography.hazmat.primitives import hashes, serialization
@@ -194,6 +201,7 @@ def _ensure_keystore():
     )
     with open(KEYSTORE_PATH, "wb") as f:
         f.write(p12)
+    print("[✓] keystore ready", flush=True)
 
 
 _LOADER_JAVA = r"""
@@ -301,7 +309,9 @@ def _java_bytes(b: bytes) -> str:
 
 def _ensure_loader_dex():
     if os.path.exists(LOADER_DEX):
+        print("[i] loader.dex already present", flush=True)
         return
+    print("[*] building loader.dex ...", flush=True)
     os.makedirs(LOADER_SRC_DIR, exist_ok=True)
 
     loader_src = (_LOADER_JAVA
@@ -319,6 +329,7 @@ def _ensure_loader_dex():
 
 
 def _compile_dex(src_dir: str, out_dex: str):
+    print(f"[*] _compile_dex: src={src_dir} out={out_dex}", flush=True)
     classes_dir = src_dir + "_classes"
     if os.path.exists(classes_dir):
         shutil.rmtree(classes_dir)
@@ -328,17 +339,15 @@ def _compile_dex(src_dir: str, out_dex: str):
     if not java_files:
         raise RuntimeError(f"no .java in {src_dir}")
 
-    env = _java_env()
-
-    subprocess.run(
+    # 1) ecj compile
+    run_stream(
         [JAVA_BIN, "-jar", ECJ_JAR,
          "-source", "1.8", "-target", "1.8",
          "-cp", ANDROID_JAR,
          "-d", classes_dir] + java_files,
-        check=True, capture_output=True, env=env,
+        timeout=300, label="ecj",
     )
 
-    os.makedirs(os.path.dirname(out_dex) or ".", exist_ok=True)
     class_files = []
     for root, _, files in os.walk(classes_dir):
         for f in files:
@@ -352,11 +361,12 @@ def _compile_dex(src_dir: str, out_dex: str):
         shutil.rmtree(d8_out)
     os.makedirs(d8_out, exist_ok=True)
 
-    subprocess.run(
+    # 2) d8 → dex
+    run_stream(
         [D8_BIN, "--min-api", "24", "--release",
          "--lib", ANDROID_JAR,
          "--output", d8_out] + class_files,
-        check=True, capture_output=True, env=env,
+        timeout=300, label="d8",
     )
 
     produced = os.path.join(d8_out, "classes.dex")
@@ -365,14 +375,7 @@ def _compile_dex(src_dir: str, out_dex: str):
     shutil.copy2(produced, out_dex)
     shutil.rmtree(d8_out, ignore_errors=True)
     shutil.rmtree(classes_dir, ignore_errors=True)
-
-
-def _java_env() -> dict:
-    env = os.environ.copy()
-    jhome = os.path.dirname(os.path.dirname(JAVA_BIN))
-    env["JAVA_HOME"] = jhome
-    env["PATH"] = os.path.dirname(JAVA_BIN) + os.pathsep + env.get("PATH", "")
-    return env
+    print(f"[✓] dex written → {out_dex}", flush=True)
 
 
 def _do_setup():
@@ -385,19 +388,14 @@ def _do_setup():
     _ensure_loader_dex()
     with open(_READY_FLAG, "w") as f:
         f.write("ok")
+    print("[✓] ALL TOOLS READY", flush=True)
 
 
 def ensure_tools():
-    """
-    Thread-safe. Pehla caller setup karta hai, baaki wait karte hain.
-    Boot thread + handler thread dono isse safely call kar sakte hain.
-    """
     if os.path.exists(_READY_FLAG):
         _setup_done.set()
         return
-
     with _setup_lock:
-        # double-check after acquiring lock
         if os.path.exists(_READY_FLAG):
             _setup_done.set()
             return
@@ -406,14 +404,13 @@ def ensure_tools():
             _setup_error["exc"] = None
         except Exception as e:
             _setup_error["exc"] = e
-            print(f"[!] setup failed: {e}")
+            print(f"[!] setup failed: {e}", flush=True)
             raise
         finally:
             _setup_done.set()
 
 
 def wait_ready(timeout: float = 900.0) -> bool:
-    """Block karta hai jab tak setup complete na ho. handler threads ke liye."""
     if os.path.exists(_READY_FLAG):
         return True
     ok = _setup_done.wait(timeout)
