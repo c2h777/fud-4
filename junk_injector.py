@@ -9,25 +9,18 @@ def rand_str(k=8):
 
 def inject_junk(decompiled_dir: str, count: int = 8):
     """
-    res/raw/ mein fake XML files inject karo.
-    APK structure valid rehti hai — sirf extra files add hoti hain.
+    res/raw me reference-less files daalna pointless tha.
+    Ab: assets/ me random binary blobs — entropy badhata hai,
+    APK valid rehti hai, koi reference nahi chahiye.
     """
-    res_dir = os.path.join(decompiled_dir, "res", "raw")
-    os.makedirs(res_dir, exist_ok=True)
+    assets = os.path.join(decompiled_dir, "assets")
+    os.makedirs(assets, exist_ok=True)
 
-    injected = 0
     for _ in range(count):
-        fname   = rand_str(10) + ".xml"
-        content = (
-            '<?xml version="1.0" encoding="utf-8"?>\n'
-            f'<resources>\n'
-            f'  <string name="{rand_str(6)}">'
-            f'{"".join(random.choices(string.ascii_letters + string.digits, k=random.randint(24, 64)))}'
-            f'</string>\n'
-            f'</resources>\n'
-        )
-        with open(os.path.join(res_dir, fname), "w", encoding="utf-8") as f:
-            f.write(content)
-        injected += 1
+        fname = rand_str(12) + ".dat"
+        size = random.randint(1024, 16 * 1024)
+        blob = bytes(random.getrandbits(8) for _ in range(size))
+        with open(os.path.join(assets, fname), "wb") as f:
+            f.write(blob)
 
-    print(f"[✓] {injected} junk files injected → res/raw/")
+    print(f"[✓] {count} junk blobs → assets/")
