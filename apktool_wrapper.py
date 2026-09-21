@@ -4,10 +4,17 @@ import subprocess
 from config import JAVA_BIN, APKTOOL_JAR
 
 
+def _env():
+    env = os.environ.copy()
+    env["JAVA_HOME"] = os.path.dirname(os.path.dirname(JAVA_BIN))
+    env["PATH"] = os.path.dirname(JAVA_BIN) + os.pathsep + env.get("PATH", "")
+    return env
+
+
 def _run(cmd):
-    p = subprocess.run(cmd, capture_output=True, text=True)
+    p = subprocess.run(cmd, capture_output=True, text=True, env=_env())
     if p.returncode != 0:
-        raise RuntimeError(f"cmd failed: {' '.join(cmd)}\n{p.stdout}\n{p.stderr}")
+        raise RuntimeError(f"{' '.join(cmd)}\nSTDOUT:\n{p.stdout}\nSTDERR:\n{p.stderr}")
     return p.stdout
 
 
@@ -15,10 +22,6 @@ def decompile(apk_path: str, output_dir: str):
     if os.path.exists(output_dir):
         shutil.rmtree(output_dir)
     _run([JAVA_BIN, "-jar", APKTOOL_JAR, "d", "-f", "-o", output_dir, apk_path])
-    # purge stale signatures
-    meta = os.path.join(output_dir, "original", "META-INF")
-    if os.path.exists(meta):
-        shutil.rmtree(meta)
     print(f"[✓] apktool decompiled → {output_dir}")
 
 
