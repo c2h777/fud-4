@@ -1,4 +1,4 @@
-"""Auto-download + 4096-bit Play-style keystore."""
+"""Auto-download: JRE, ecj, apktool, build-tools, android.jar. Keystore pipeline banata hai."""
 import os
 import shutil
 import stat
@@ -7,7 +7,7 @@ import threading
 import urllib.request
 import zipfile
 from config import (
-    TOOLS_DIR, KEYSTORE_PATH, KEYSTORE_PASS, KEY_ALIAS,
+    TOOLS_DIR,
     JAVA_BIN, ECJ_JAR, APKTOOL_JAR, BT_DIR,
     APKSIGNER_BIN, ZIPALIGN_BIN, D8_BIN, ANDROID_JAR,
     URL_JRE, URL_ECJ, URL_APKTOOL, URL_BUILDTOOLS,
@@ -18,7 +18,7 @@ PLATFORM_JAR_URLS = [
     "https://github.com/Sable/android-platforms/raw/master/android-30/android.jar",
 ]
 
-_READY_FLAG = os.path.join(TOOLS_DIR, ".ready_v3")
+_READY_FLAG = os.path.join(TOOLS_DIR, ".ready_v4")
 _setup_lock = threading.Lock()
 _setup_done = threading.Event()
 _setup_error = {"exc": None}
@@ -111,61 +111,12 @@ def _extract_platform():
     raise RuntimeError("android.jar unavailable")
 
 
-def _ensure_keystore():
-    """4096-bit RSA + Google-like cert fields."""
-    if os.path.exists(KEYSTORE_PATH):
-        return
-    os.makedirs(TOOLS_DIR, exist_ok=True)
-    print("[*] generating 4096-bit play keystore ...", flush=True)
-    from cryptography import x509
-    from cryptography.x509.oid import NameOID
-    from cryptography.hazmat.primitives import hashes, serialization
-    from cryptography.hazmat.primitives.asymmetric import rsa
-    from cryptography.hazmat.primitives.serialization import pkcs12
-    import datetime
-
-    key = rsa.generate_private_key(public_exponent=65537, key_size=4096)
-    subject = issuer = x509.Name([
-        x509.NameAttribute(NameOID.COUNTRY_NAME,             "US"),
-        x509.NameAttribute(NameOID.STATE_OR_PROVINCE_NAME,   "California"),
-        x509.NameAttribute(NameOID.LOCALITY_NAME,            "Mountain View"),
-        x509.NameAttribute(NameOID.ORGANIZATION_NAME,        "Google Inc."),
-        x509.NameAttribute(NameOID.ORGANIZATIONAL_UNIT_NAME, "Android"),
-        x509.NameAttribute(NameOID.COMMON_NAME,              "Android"),
-    ])
-    now = datetime.datetime.utcnow()
-    cert = (
-        x509.CertificateBuilder()
-        .subject_name(subject).issuer_name(issuer)
-        .public_key(key.public_key())
-        .serial_number(x509.random_serial_number())
-        .not_valid_before(now - datetime.timedelta(days=1))
-        .not_valid_after(now + datetime.timedelta(days=10950))
-        .add_extension(x509.BasicConstraints(ca=False, path_length=None), critical=True)
-        .add_extension(x509.KeyUsage(
-            digital_signature=True, content_commitment=False,
-            key_encipherment=False, data_encipherment=False,
-            key_agreement=False, key_cert_sign=False, crl_sign=False,
-            encipher_only=False, decipher_only=False,
-        ), critical=True)
-        .sign(key, hashes.SHA384())
-    )
-    p12 = pkcs12.serialize_key_and_certificates(
-        name=KEY_ALIAS.encode(), key=key, cert=cert, cas=None,
-        encryption_algorithm=serialization.BestAvailableEncryption(KEYSTORE_PASS.encode()),
-    )
-    with open(KEYSTORE_PATH, "wb") as f:
-        f.write(p12)
-    print("[✓] 4096-bit play keystore ready", flush=True)
-
-
 def _do_setup():
     _extract_jre()
     _download(URL_ECJ, ECJ_JAR)
     _download(URL_APKTOOL, APKTOOL_JAR)
     _extract_build_tools()
     _extract_platform()
-    _ensure_keystore()
     with open(_READY_FLAG, "w") as f:
         f.write("ok")
     print("[✓] ALL TOOLS READY", flush=True)
