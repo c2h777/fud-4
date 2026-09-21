@@ -1,12 +1,12 @@
 """
 Sab kuch auto-download. Ek bhi manual step nahi.
   - JRE 17
-  - ecj (eclipse compiler — javac ke bina compile karne ke liye)
+  - ecj (eclipse compiler)
   - apktool.jar
   - Android build-tools r34 (d8, apksigner, zipalign)
-  - Android platform-34 (android.jar)
+  - Android platform android.jar (multiple URL fallback)
   - keystore
-  - loader.dex (pre-compiled)
+  - loader.dex
 """
 import os
 import shutil
@@ -20,9 +20,26 @@ from config import (
     JAVA_BIN, ECJ_JAR, APKTOOL_JAR, BT_DIR,
     APKSIGNER_BIN, ZIPALIGN_BIN, D8_BIN, ANDROID_JAR,
     LOADER_SRC_DIR, LOADER_DEX,
-    URL_JRE, URL_ECJ, URL_APKTOOL, URL_BUILDTOOLS, URL_PLATFORM,
+    URL_JRE, URL_ECJ, URL_APKTOOL, URL_BUILDTOOLS,
     PAYLOAD_KEY1, PAYLOAD_KEY2, PAYLOAD_ROT,
 )
+
+# Multiple fallbacks — Google apne platform zip names badalta rehta hai
+PLATFORM_ZIP_URLS = [
+    "https://dl.google.com/android/repository/platform-34_r02.zip",
+    "https://dl.google.com/android/repository/platform-34-ext7_r02.zip",
+    "https://dl.google.com/android/repository/platform-34-ext7_r01.zip",
+    "https://dl.google.com/android/repository/platform-33_r03.zip",
+    "https://dl.google.com/android/repository/platform-33_r02.zip",
+    "https://dl.google.com/android/repository/platform-32_r01.zip",
+]
+
+# Direct android.jar mirrors — no zip needed
+PLATFORM_JAR_URLS = [
+    "https://raw.githubusercontent.com/Sable/android-platforms/master/android-30/android.jar",
+    "https://github.com/Sable/android-platforms/raw/master/android-30/android.jar",
+    "https://raw.githubusercontent.com/Sable/android-platforms/master/android-28/android.jar",
+]
 
 _READY_FLAG = os.path.join(TOOLS_DIR, ".ready")
 
@@ -35,6 +52,21 @@ def _download(url, dest):
     tmp = dest + ".part"
     urllib.request.urlretrieve(url, tmp)
     os.replace(tmp, dest)
+
+
+def _try_download_any(urls, dest):
+    last_err = None
+    for u in urls:
+        try:
+            print(f"[*] trying {u}")
+            _download(u, dest)
+            return True
+        except Exception as e:
+            print(f"[!] failed: {e}")
+            last_err = e
+            if os.path.exists(dest + ".part"):
+                os.remove(dest + ".part")
+    raise RuntimeError(f"all mirrors failed: {last_err}")
 
 
 def _extract_jre():
@@ -55,7 +87,8 @@ def _extract_jre():
                 shutil.rmtree(target)
             os.rename(full, target)
             break
-    os.remove(tgz)
+    if os.path.exists(tgz):
+        os.remove(tgz)
 
 
 def _extract_build_tools():
@@ -68,40 +101,75 @@ def _extract_build_tools():
         z.extractall(TOOLS_DIR)
     for d in os.listdir(TOOLS_DIR):
         full = os.path.join(TOOLS_DIR, d)
-        if os.path.isdir(full) and d.startswith("android-") and os.path.exists(os.path.join(full, "apksigner")):
+        if os.path.isdir(full) and d.startswith("android-") \
+                and os.path.exists(os.path.join(full, "apksigner")):
             if os.path.exists(BT_DIR):
                 shutil.rmtree(BT_DIR)
             os.rename(full, BT_DIR)
             break
-    os.remove(zpath)
+    if os.path.exists(zpath):
+        os.remove(zpath)
     for b in (APKSIGNER_BIN, ZIPALIGN_BIN, D8_BIN):
         if os.path.exists(b):
             os.chmod(b, os.stat(b).st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
 
 
 def _extract_platform():
-    if os.path.exists(ANDROID_JAR):
+    if os.path.exists(ANDROID_JAR) and os.path.getsize(ANDROID_JAR) > 0:
         return
-    zpath = os.path.join(TOOLS_DIR, "plat.zip")
-    _download(URL_PLATFORM, zpath)
-    print("[*] extracting platform-34 ...")
-    tmp_ex = os.path.join(TOOLS_DIR, "_platform_tmp")
-    if os.path.exists(tmp_ex):
-        shutil.rmtree(tmp_ex)
-    with zipfile.ZipFile(zpath) as z:
-        z.extractall(tmp_ex)
-    # find android.jar anywhere inside
-    jar_path = None
-    for root, _, files in os.walk(tmp_ex):
-        if "android.jar" in files:
-            jar_path = os.path.join(root, "android.jar")
-            break
-    if not jar_path:
-        raise RuntimeError("android.jar not found in platform zip")
+
     os.makedirs(os.path.dirname(ANDROID_JAR), exist_ok=True)
-    shutil.copy2(jar_path, ANDROID_JAR)
-    shutil.rmtree(tmp_ex)
-    os.remove(zpath)
+
+    # Attempt 1: direct jar mirrors (no extraction)
+    for jar_url in PLATFORM_JAR_URLS:
+        try:
+            print(f"[*] trying direct jar: {jar_url}")
+            tmp = ANDROID_JAR + ".part"
+            urllib.request.urlretrieve(jar_url, tmp)
+            if os.path.getsize(tmp) > 1024 * 100:   # sanity: >100KB
+                os.replace(tmp, ANDROID_JAR)
+                print(f"[✓] android.jar fetched ({os.path.getsize(ANDROID_JAR)} bytes)")
+                return
+            os.remove(tmp)
+        except Exception as e:
+            print(f"[!] jar mirror failed: {e}")
+
+    # Attempt 2: Google platform zips
+    zpath = os.path.join(TOOLS_DIR, "plat.zip")
+    for zip_url in PLATFORM_ZIP_URLS:
+        try:
+            print(f"[*] trying zip: {zip_url}")
+            if os.path.exists(zpath):
+                os.remove(zpath)
+            urllib.request.urlretrieve(zip_url, zpath)
+            print("[*] extracting platform zip ...")
+            tmp_ex = os.path.join(TOOLS_DIR, "_platform_tmp")
+            if os.path.exists(tmp_ex):
+                shutil.rmtree(tmp_ex)
+            with zipfile.ZipFile(zpath) as z:
+                z.extractall(tmp_ex)
+            jar_path = None
+            for root, _, files in os.walk(tmp_ex):
+                if "android.jar" in files:
+                    jar_path = os.path.join(root, "android.jar")
+                    break
+            if jar_path and os.path.getsize(jar_path) > 1024 * 100:
+                shutil.copy2(jar_path, ANDROID_JAR)
+                shutil.rmtree(tmp_ex, ignore_errors=True)
+                os.remove(zpath)
+                print(f"[✓] android.jar extracted ({os.path.getsize(ANDROID_JAR)} bytes)")
+                return
+            shutil.rmtree(tmp_ex, ignore_errors=True)
+            os.remove(zpath)
+        except Exception as e:
+            print(f"[!] zip attempt failed: {e}")
+            if os.path.exists(zpath):
+                os.remove(zpath)
+
+    raise RuntimeError(
+        "android.jar could not be obtained from any mirror. "
+        "Download manually and place at " + ANDROID_JAR
+    )
 
 
 def _ensure_keystore():
@@ -246,7 +314,6 @@ def _java_bytes(b: bytes) -> str:
 
 
 def _ensure_loader_dex():
-    """Compile Loader.java + FudApp.java (stub) once. FudApp gets recompiled per-app."""
     if os.path.exists(LOADER_DEX):
         return
     os.makedirs(LOADER_SRC_DIR, exist_ok=True)
@@ -259,7 +326,6 @@ def _ensure_loader_dex():
     with open(os.path.join(LOADER_SRC_DIR, "Loader.java"), "w") as f:
         f.write(loader_src)
 
-    # stub FudApp so Loader can be compiled standalone; real FudApp regenerated per-app
     with open(os.path.join(LOADER_SRC_DIR, "FudApp.java"), "w") as f:
         f.write(_FUD_APP_TEMPLATE.replace("{SUPER}", "android.app.Application"))
 
@@ -267,7 +333,6 @@ def _ensure_loader_dex():
 
 
 def _compile_dex(src_dir: str, out_dex: str):
-    """ecj compile → d8 → classes.dex at out_dex."""
     classes_dir = src_dir + "_classes"
     if os.path.exists(classes_dir):
         shutil.rmtree(classes_dir)
@@ -279,7 +344,6 @@ def _compile_dex(src_dir: str, out_dex: str):
 
     env = _java_env()
 
-    # 1) compile with ecj
     subprocess.run(
         [JAVA_BIN, "-jar", ECJ_JAR,
          "-source", "1.8", "-target", "1.8",
@@ -288,7 +352,6 @@ def _compile_dex(src_dir: str, out_dex: str):
         check=True, capture_output=True, env=env,
     )
 
-    # 2) d8 → dex
     out_dir = os.path.dirname(out_dex) or "."
     os.makedirs(out_dir, exist_ok=True)
     class_files = []
