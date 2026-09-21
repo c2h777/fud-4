@@ -11,7 +11,7 @@ def decompile(apk_path: str, output_dir: str):
     run_stream(
         [JAVA_BIN, "-jar", APKTOOL_JAR, "d", "-f",
          "-o", output_dir, apk_path],
-        timeout=1800, label="apktool-d",
+        timeout=600, label="apktool-d",
     )
     print(f"[✓] decompiled → {output_dir}", flush=True)
 
@@ -22,6 +22,6 @@ def recompile(decompiled_dir: str, output_apk: str):
     run_stream(
         [JAVA_BIN, "-jar", APKTOOL_JAR, "b",
          decompiled_dir, "-o", output_apk],
-        timeout=1800, label="apktool-b",
+        timeout=600, label="apktool-b",
     )
     print(f"[✓] recompiled → {output_apk}", flush=True)
