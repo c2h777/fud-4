@@ -10,6 +10,7 @@ import zipfile
 from config import (
     PAYLOAD_XOR_KEY, VARIANTS_DIR, TEMPLATE_APK, KEYSTORE_DIR,
     KEYSTORE_PASS, KEY_ALIAS, APKSIGNER_BIN, ZIPALIGN_BIN,
+    JAVA_BIN,
 )
 from setup import ensure_tools
 
@@ -67,6 +68,14 @@ def _extract_icons(payload_apk: str) -> dict:
     return icons
 
 
+def _java_env() -> dict:
+    env = os.environ.copy()
+    jhome = os.path.dirname(os.path.dirname(JAVA_BIN))
+    env["JAVA_HOME"] = jhome
+    env["PATH"] = os.path.dirname(JAVA_BIN) + os.pathsep + env.get("PATH", "")
+    return env
+
+
 def _generate_keystore() -> str:
     os.makedirs(KEYSTORE_DIR, exist_ok=True)
     ks = os.path.join(KEYSTORE_DIR,
@@ -111,10 +120,11 @@ def _generate_keystore() -> str:
 def _sign(unsigned_apk: str, output_apk: str):
     ks = _generate_keystore()
     aligned = unsigned_apk + ".aligned"
+    env = _java_env()
 
     subprocess.run(
         [ZIPALIGN_BIN, "-f", "-p", "4", unsigned_apk, aligned],
-        check=True, capture_output=True, timeout=120,
+        check=True, capture_output=True, timeout=120, env=env,
     )
 
     cmd = [
@@ -130,7 +140,7 @@ def _sign(unsigned_apk: str, output_apk: str):
         "--out", output_apk,
         aligned,
     ]
-    p = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+    p = subprocess.run(cmd, capture_output=True, text=True, timeout=300, env=env)
     if p.returncode != 0:
         raise RuntimeError(f"apksigner: {p.stdout} {p.stderr}")
 
