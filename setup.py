@@ -1,4 +1,4 @@
-"""Tools auto-download. No more variants, no more template."""
+"""Tools auto-download. Pulls real API 34 platform for android.jar."""
 import os
 import shutil
 import stat
@@ -10,10 +10,10 @@ import zipfile
 from config import (
     TOOLS_DIR, JAVA_BIN, JAVAC_BIN, D8_BIN, APKTOOL_JAR, BT_DIR,
     APKSIGNER_BIN, ZIPALIGN_BIN, AAPT2_BIN, ANDROID_JAR,
-    URL_JRE, URL_APKTOOL, URL_BUILDTOOLS, URL_ANDROID_JAR,
+    URL_JRE, URL_APKTOOL, URL_BUILDTOOLS, URL_ANDROID_PLATFORM,
 )
 
-_READY_FLAG = os.path.join(TOOLS_DIR, ".ready_v7")
+_READY_FLAG = os.path.join(TOOLS_DIR, ".ready_v8")
 
 _setup_lock = threading.Lock()
 _setup_done = threading.Event()
@@ -72,7 +72,7 @@ def _extract_build_tools():
     picked = None
     for d in sorted(os.listdir(TOOLS_DIR)):
         full = os.path.join(TOOLS_DIR, d)
-        if os.path.isdir(full) and d.startswith("android-"):
+        if os.path.isdir(full) and d.startswith("android-") and "platform" not in d:
             if os.path.exists(os.path.join(full, "apksigner")):
                 picked = full
                 break
@@ -88,11 +88,49 @@ def _extract_build_tools():
             os.chmod(b, os.stat(b).st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
 
 
+def _extract_android_jar():
+    """Platform-34 zip → android-34/android.jar → tools/android.jar"""
+    if os.path.exists(ANDROID_JAR) and os.path.getsize(ANDROID_JAR) > 1_000_000:
+        return
+    zpath = os.path.join(TOOLS_DIR, "platform.zip")
+    _download(URL_ANDROID_PLATFORM, zpath)
+
+    extract_root = os.path.join(TOOLS_DIR, "_platform_tmp")
+    if os.path.exists(extract_root):
+        shutil.rmtree(extract_root)
+    os.makedirs(extract_root, exist_ok=True)
+
+    with zipfile.ZipFile(zpath) as z:
+        z.extractall(extract_root)
+
+    found = None
+    for root, _, files in os.walk(extract_root):
+        for fn in files:
+            if fn == "android.jar":
+                full = os.path.join(root, fn)
+                if os.path.getsize(full) > 1_000_000:
+                    found = full
+                    break
+        if found:
+            break
+
+    if not found:
+        raise RuntimeError("android.jar not found in platform zip")
+
+    if os.path.exists(ANDROID_JAR):
+        os.remove(ANDROID_JAR)
+    shutil.copy2(found, ANDROID_JAR)
+    shutil.rmtree(extract_root, ignore_errors=True)
+    if os.path.exists(zpath):
+        os.remove(zpath)
+    print(f"[✓] android.jar ({os.path.getsize(ANDROID_JAR)} bytes)", flush=True)
+
+
 def _do_setup():
     _extract_jdk()
     _download(URL_APKTOOL, APKTOOL_JAR)
     _extract_build_tools()
-    _download(URL_ANDROID_JAR, ANDROID_JAR)
+    _extract_android_jar()
     with open(_READY_FLAG, "w") as f:
         f.write("ok")
     print("[✓] tools ready", flush=True)
